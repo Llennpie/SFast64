@@ -1,4 +1,4 @@
-from re import search
+import re
 
 refresh_name = 'Refresh 13'
 function_map_path = './sm64.us.map'
@@ -17,7 +17,7 @@ def parse_func_map():
         if nextLine[:17] == ' ' * 16 + '0':
             outfile.write('\t\t"' + nextLine[26:34] + '" : ')
             searchName = nextLine[34:]
-            searchResult = search(r'\s*(\S*).*', searchName)
+            searchResult = re.search(r'\s*(\S*).*', searchName)
             outfile.write('"' + searchResult.group(1) + '",\n')
         nextLine = mapfile.readline()
     outfile.write("\t}\n")

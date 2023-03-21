@@ -1,4 +1,4 @@
-import os
+import bpy, os
 
 def starSelectWarning(operator, fileStatus):
 	if fileStatus is not None and not fileStatus.starSelectC:

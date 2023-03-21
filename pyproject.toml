@@ -6,7 +6,8 @@
 line-length = 120
 
 target-version = [
-    'py310', # used by Blender 3.1
+    'py37', # used by Blender 2.80
+    'py39', # used by Blender 3.0.1
 ]
 
 # What files to exclude when running Black on directories (for example `black .`)

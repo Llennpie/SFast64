@@ -1,72 +1,33 @@
-import bpy, os, math, mathutils
-from ..f3d.f3d_gbi import TextureExportSettings
-from ..f3d.f3d_writer import TriangleConverterInfo, saveStaticModel, getInfoDict
-from .room.properties import OOTRoomHeaderProperty, OOTAlternateRoomHeaderProperty
-from .oot_constants import ootData
-from .cutscene.exporter import convertCutsceneObject, readCutsceneData
-from .oot_spline import assertCurveValid, ootConvertPath
-from .oot_model_classes import OOTModel
-from .oot_collision import OOTCameraData, exportCollisionCommon
-from .oot_collision_classes import OOTCameraPosData, OOTWaterBox, OOTCrawlspaceData, decomp_compat_map_CameraSType
-from .oot_object import addMissingObjectsToAllRoomHeaders
-from .oot_f3d_writer import writeTextureArraysNew, writeTextureArraysExisting1D
+import bpy, bmesh, os, math, re, shutil, mathutils
+from io import BytesIO
+from bpy.utils import register_class, unregister_class
 
-from ..utility import (
-    PluginError,
-    CData,
-    checkIdentityRotation,
-    restoreHiddenState,
-    unhideAllAndGetHiddenState,
-    ootGetBaseOrCustomLight,
-    exportColor,
-    toAlnum,
-    checkObjectReference,
-    writeCDataSourceOnly,
-    writeCDataHeaderOnly,
-    readFile,
-    writeFile,
-)
+from ..utility import *
+from .oot_utility import *
+from .oot_constants import *
+from ..panels import OOT_Panel
 
-from .scene.exporter.to_c import (
-    setBootupScene,
-    getIncludes,
-    getSceneC,
-    modifySceneTable,
-    editSpecFile,
-    modifySceneFiles,
-)
+from ..f3d.f3d_gbi import *
+from ..f3d.f3d_writer import *
+from .oot_f3d_writer import *
 
-from .oot_utility import (
-    OOTObjectCategorizer,
-    CullGroup,
-    checkUniformScale,
-    ootDuplicateHierarchy,
-    ootCleanupScene,
-    ootGetPath,
-    getCustomProperty,
-    ootConvertTranslation,
-    ootConvertRotation,
-    getSceneDirFromLevelName,
-    isPathObject,
-)
+from .oot_level_classes import *
+from .oot_level import *
+from .oot_collision import *
+from .oot_spline import *
+from .oot_cutscene import *
+from .c_writer import *
 
-from .oot_level_classes import (
-    OOTLight,
-    OOTExit,
-    OOTScene,
-    OOTRoom,
-    OOTActor,
-    OOTTransitionActor,
-    OOTEntrance,
-    OOTDLGroup,
-    OOTBGImage,
-    addActor,
-    addStartPosition,
-)
+
+def sceneNameFromID(sceneID):
+    if sceneID in ootSceneIDToName:
+        return ootSceneIDToName[sceneID]
+    else:
+        raise PluginError("Cannot find scene ID " + str(sceneID))
 
 
 def ootPreprendSceneIncludes(scene, file):
-    exportFile = getIncludes(scene)
+    exportFile = ootSceneIncludes(scene)
     exportFile.append(file)
     return exportFile
 
@@ -83,10 +44,10 @@ def ootCreateSceneHeader(levelC):
             sceneHeader.append(levelC.sceneCutscenesC[i])
     for roomName, roomMainC in levelC.roomMainC.items():
         sceneHeader.append(roomMainC)
-    for roomName, roomShapeInfoC in levelC.roomShapeInfoC.items():
-        sceneHeader.append(roomShapeInfoC)
-    for roomName, roomModelC in levelC.roomModelC.items():
-        sceneHeader.append(roomModelC)
+    for roomName, roomMeshInfoC in levelC.roomMeshInfoC.items():
+        sceneHeader.append(roomMeshInfoC)
+    for roomName, roomMeshC in levelC.roomMeshC.items():
+        sceneHeader.append(roomMeshC)
 
     return sceneHeader
 
@@ -104,9 +65,7 @@ def ootCombineSceneFiles(levelC):
     return sceneC
 
 
-def ootExportSceneToC(
-    originalSceneObj, transformMatrix, f3dType, isHWv1, sceneName, DLFormat, savePNG, exportInfo, bootToSceneOptions
-):
+def ootExportSceneToC(originalSceneObj, transformMatrix, f3dType, isHWv1, sceneName, DLFormat, savePNG, exportInfo):
 
     checkObjectReference(originalSceneObj, "Scene object")
     isCustomExport = exportInfo.isCustomExportPath
@@ -118,26 +77,17 @@ def ootExportSceneToC(
     if exportInfo.customSubPath is not None:
         exportSubdir = exportInfo.customSubPath
     if not isCustomExport and exportInfo.customSubPath is None:
-        exportSubdir = os.path.dirname(getSceneDirFromLevelName(sceneName))
+        for sceneSubdir, sceneNames in ootSceneDirs.items():
+            if sceneName in sceneNames:
+                exportSubdir = sceneSubdir
+                break
+        if exportSubdir == "":
+            raise PluginError("Scene folder " + sceneName + " cannot be found in the ootSceneDirs list.")
 
-    roomObjList = [
-        obj for obj in originalSceneObj.children_recursive if obj.data is None and obj.ootEmptyType == "Room"
-    ]
-    for roomObj in roomObjList:
-        room = scene.rooms[roomObj.ootRoomHeader.roomIndex]
-        addMissingObjectsToAllRoomHeaders(roomObj, room, ootData)
-
-    sceneInclude = exportSubdir + "/" + sceneName + "/"
     levelPath = ootGetPath(exportPath, isCustomExport, exportSubdir, sceneName, True, True)
-    levelC = getSceneC(scene, TextureExportSettings(False, savePNG, sceneInclude, levelPath))
+    levelC = ootLevelToC(scene, TextureExportSettings(False, savePNG, exportSubdir + sceneName, levelPath))
 
-    if not isCustomExport:
-        writeTextureArraysExistingScene(scene.model, exportPath, sceneInclude + sceneName + "_scene.h")
-    else:
-        textureArrayData = writeTextureArraysNew(scene.model, None)
-        levelC.sceneTexturesC.append(textureArrayData)
-
-    if bpy.context.scene.ootSceneExportSettings.singleFile:
+    if bpy.context.scene.ootSceneSingleFile:
         writeCDataSourceOnly(
             ootPreprendSceneIncludes(scene, ootCombineSceneFiles(levelC)),
             os.path.join(levelPath, scene.sceneName() + ".c"),
@@ -145,8 +95,8 @@ def ootExportSceneToC(
         for i in range(len(scene.rooms)):
             roomC = CData()
             roomC.append(levelC.roomMainC[scene.rooms[i].roomName()])
-            roomC.append(levelC.roomShapeInfoC[scene.rooms[i].roomName()])
-            roomC.append(levelC.roomModelC[scene.rooms[i].roomName()])
+            roomC.append(levelC.roomMeshInfoC[scene.rooms[i].roomName()])
+            roomC.append(levelC.roomMeshC[scene.rooms[i].roomName()])
             writeCDataSourceOnly(
                 ootPreprendSceneIncludes(scene, roomC), os.path.join(levelPath, scene.rooms[i].roomName() + ".c")
             )
@@ -176,81 +126,43 @@ def ootExportSceneToC(
             writeCDataSourceOnly(
                 ootPreprendSceneIncludes(scene, roomMainC), os.path.join(levelPath, roomName + "_main.c")
             )
-        for roomName, roomShapeInfoC in levelC.roomShapeInfoC.items():
+        for roomName, roomMeshInfoC in levelC.roomMeshInfoC.items():
             writeCDataSourceOnly(
-                ootPreprendSceneIncludes(scene, roomShapeInfoC), os.path.join(levelPath, roomName + "_model_info.c")
+                ootPreprendSceneIncludes(scene, roomMeshInfoC), os.path.join(levelPath, roomName + "_model_info.c")
             )
-        for roomName, roomModelC in levelC.roomModelC.items():
+        for roomName, roomMeshC in levelC.roomMeshC.items():
             writeCDataSourceOnly(
-                ootPreprendSceneIncludes(scene, roomModelC), os.path.join(levelPath, roomName + "_model.c")
+                ootPreprendSceneIncludes(scene, roomMeshC), os.path.join(levelPath, roomName + "_model.c")
             )
 
     # Export the scene .h file
     writeCDataHeaderOnly(ootCreateSceneHeader(levelC), os.path.join(levelPath, scene.sceneName() + ".h"))
 
-    # Copy bg images
-    scene.copyBgImages(levelPath)
-
     if not isCustomExport:
         writeOtherSceneProperties(scene, exportInfo, levelC)
-
-    if bootToSceneOptions is not None and bootToSceneOptions.bootToScene:
-        setBootupScene(
-            os.path.join(exportPath, "include/config/config_debug.h")
-            if not isCustomExport
-            else os.path.join(levelPath, "config_bootup.h"),
-            "ENTR_" + sceneName.upper() + "_" + str(bootToSceneOptions.spawnIndex),
-            bootToSceneOptions,
-        )
-
-
-def writeTextureArraysExistingScene(fModel: OOTModel, exportPath: str, sceneInclude: str):
-    drawConfigPath = os.path.join(exportPath, "src/code/z_scene_table.c")
-    drawConfigData = readFile(drawConfigPath)
-    newData = drawConfigData
-
-    if f'#include "{sceneInclude}"' not in newData:
-        additionalIncludes = f'#include "{sceneInclude}"\n'
-    else:
-        additionalIncludes = ""
-
-    for flipbook in fModel.flipbooks:
-        if flipbook.exportMode == "Array":
-            newData = writeTextureArraysExisting1D(newData, flipbook, additionalIncludes)
-        else:
-            raise PluginError("Scenes can only use array flipbooks.")
-
-    if newData != drawConfigData:
-        writeFile(drawConfigPath, newData)
 
 
 def writeOtherSceneProperties(scene, exportInfo, levelC):
     modifySceneTable(scene, exportInfo)
-    editSpecFile(scene, exportInfo, levelC)
+    modifySegmentDefinition(scene, exportInfo, levelC)
     modifySceneFiles(scene, exportInfo)
 
 
 def readSceneData(scene, scene_properties, sceneHeader, alternateSceneHeaders):
     scene.write_dummy_room_list = scene_properties.write_dummy_room_list
-    scene.sceneTableEntry.drawConfig = getCustomProperty(sceneHeader.sceneTableEntry, "drawConfig")
+    scene.sceneTableEntry.drawConfig = sceneHeader.sceneTableEntry.drawConfig
     scene.globalObject = getCustomProperty(sceneHeader, "globalObject")
     scene.naviCup = getCustomProperty(sceneHeader, "naviCup")
     scene.skyboxID = getCustomProperty(sceneHeader, "skyboxID")
     scene.skyboxCloudiness = getCustomProperty(sceneHeader, "skyboxCloudiness")
     scene.skyboxLighting = getCustomProperty(sceneHeader, "skyboxLighting")
-    scene.isSkyboxLightingCustom = sceneHeader.skyboxLighting == "Custom"
     scene.mapLocation = getCustomProperty(sceneHeader, "mapLocation")
     scene.cameraMode = getCustomProperty(sceneHeader, "cameraMode")
     scene.musicSeq = getCustomProperty(sceneHeader, "musicSeq")
     scene.nightSeq = getCustomProperty(sceneHeader, "nightSeq")
     scene.audioSessionPreset = getCustomProperty(sceneHeader, "audioSessionPreset")
-    scene.appendNullEntrance = sceneHeader.appendNullEntrance
 
-    if (
-        sceneHeader.skyboxLighting == "0x00"
-        or sceneHeader.skyboxLighting == "0"
-        or sceneHeader.skyboxLighting == "LIGHT_MODE_TIME"
-    ):  # Time of Day
+    if sceneHeader.skyboxLighting == "0x00":  # Time of Day
         scene.lights.append(getLightData(sceneHeader.timeOfDayLights.dawn))
         scene.lights.append(getLightData(sceneHeader.timeOfDayLights.day))
         scene.lights.append(getLightData(sceneHeader.timeOfDayLights.dusk))
@@ -343,34 +255,42 @@ def getExitData(exitProp):
 
 def getLightData(lightProp):
     light = OOTLight()
-    light.ambient = exportColor(lightProp.ambient)
-    light.diffuse0, light.diffuseDir0 = ootGetBaseOrCustomLight(lightProp, 0, True, True)
-    light.diffuse1, light.diffuseDir1 = ootGetBaseOrCustomLight(lightProp, 1, True, True)
-    light.fogColor = exportColor(lightProp.fogColor)
+    light.ambient = getLightColor(lightProp.ambient)
+    if lightProp.useCustomDiffuse0:
+        if lightProp.diffuse0Custom is None:
+            raise PluginError("Error: Diffuse 0 light object not set in a scene lighting property.")
+        light.diffuse0 = getLightColor(lightProp.diffuse0Custom.color)
+        light.diffuseDir0 = getLightRotation(lightProp.diffuse0Custom)
+    else:
+        light.diffuse0 = getLightColor(lightProp.diffuse0)
+        light.diffuseDir0 = [0x49, 0x49, 0x49]
+
+    if lightProp.useCustomDiffuse1:
+        if lightProp.diffuse1Custom is None:
+            raise PluginError("Error: Diffuse 1 light object not set in a scene lighting property.")
+        light.diffuse1 = getLightColor(lightProp.diffuse1Custom.color)
+        light.diffuseDir1 = getLightRotation(lightProp.diffuse1Custom)
+    else:
+        light.diffuse1 = getLightColor(lightProp.diffuse1)
+        light.diffuseDir1 = [0xB7, 0xB7, 0xB7]
+
+    light.fogColor = getLightColor(lightProp.fogColor)
     light.fogNear = lightProp.fogNear
     light.transitionSpeed = lightProp.transitionSpeed
     light.fogFar = lightProp.fogFar
     return light
 
 
-def readRoomData(
-    sceneName: str,
-    room: OOTRoom,
-    roomHeader: OOTRoomHeaderProperty,
-    alternateRoomHeaders: OOTAlternateRoomHeaderProperty,
-):
+def readRoomData(room, roomHeader, alternateRoomHeaders):
     room.roomIndex = roomHeader.roomIndex
     room.roomBehaviour = getCustomProperty(roomHeader, "roomBehaviour")
     room.disableWarpSongs = roomHeader.disableWarpSongs
     room.showInvisibleActors = roomHeader.showInvisibleActors
-
-    # room heat behavior is active if the idle mode is 0x03
-    room.linkIdleMode = getCustomProperty(roomHeader, "linkIdleMode") if not roomHeader.roomIsHot else "0x03"
-
+    room.linkIdleMode = getCustomProperty(roomHeader, "linkIdleMode")
     room.linkIdleModeCustom = roomHeader.linkIdleModeCustom
     room.setWind = roomHeader.setWind
-    room.windVector = roomHeader.windVector[:]
-    room.windStrength = roomHeader.windStrength
+    room.windVector = normToSigned8Vector(mathutils.Vector(roomHeader.windVector).normalized())
+    room.windStrength = int(0xFF * max(mathutils.Vector(roomHeader.windVector).length, 1))
     if roomHeader.leaveTimeUnchanged:
         room.timeHours = "0xFF"
         room.timeMinutes = "0xFF"
@@ -381,58 +301,28 @@ def readRoomData(
     room.disableSkybox = roomHeader.disableSkybox
     room.disableSunMoon = roomHeader.disableSunMoon
     room.echo = roomHeader.echo
-
-    for obj in roomHeader.objectList:
-        # export using the key if the legacy prop isn't present
-        if "objectID" not in obj:
-            if obj.objectKey != "Custom":
-                objectID = ootData.objectData.objectsByKey[obj.objectKey].id
-            else:
-                objectID = obj.objectIDCustom
-        else:
-            objectID = ootData.objectData.ootEnumObjectIDLegacy[obj["objectID"]][0]
-            if objectID == "Custom":
-                objectID = obj.objectIDCustom
-
-        room.objectIDList.append(objectID)
-
-    if len(room.objectIDList) > 16:
-        print(
-            "Warning: A room can only have a maximum of 16 objects in its object list, unless more memory is allocated in code.",
-        )
+    room.objectList.extend([getCustomProperty(item, "objectID") for item in roomHeader.objectList])
+    if len(room.objectList) > 15:
+        raise PluginError("Error: A scene can only have a maximum of 15 objects (OOT, not blender objects).")
 
     if alternateRoomHeaders is not None:
         if not alternateRoomHeaders.childNightHeader.usePreviousHeader:
             room.childNightHeader = room.getAlternateHeaderRoom(room.ownerName)
-            readRoomData(sceneName, room.childNightHeader, alternateRoomHeaders.childNightHeader, None)
+            readRoomData(room.childNightHeader, alternateRoomHeaders.childNightHeader, None)
 
         if not alternateRoomHeaders.adultDayHeader.usePreviousHeader:
             room.adultDayHeader = room.getAlternateHeaderRoom(room.ownerName)
-            readRoomData(sceneName, room.adultDayHeader, alternateRoomHeaders.adultDayHeader, None)
+            readRoomData(room.adultDayHeader, alternateRoomHeaders.adultDayHeader, None)
 
         if not alternateRoomHeaders.adultNightHeader.usePreviousHeader:
             room.adultNightHeader = room.getAlternateHeaderRoom(room.ownerName)
-            readRoomData(sceneName, room.adultNightHeader, alternateRoomHeaders.adultNightHeader, None)
+            readRoomData(room.adultNightHeader, alternateRoomHeaders.adultNightHeader, None)
 
         for i in range(len(alternateRoomHeaders.cutsceneHeaders)):
             cutsceneHeaderProp = alternateRoomHeaders.cutsceneHeaders[i]
             cutsceneHeader = room.getAlternateHeaderRoom(room.ownerName)
-            readRoomData(sceneName, cutsceneHeader, cutsceneHeaderProp, None)
+            readRoomData(cutsceneHeader, cutsceneHeaderProp, None)
             room.cutsceneHeaders.append(cutsceneHeader)
-
-    if roomHeader.roomShape == "ROOM_SHAPE_TYPE_IMAGE":
-        for bgImage in roomHeader.bgImageList:
-            if bgImage.image is None:
-                raise PluginError(
-                    'A room is has room shape "Image" but does not have an image set in one of its BG images.'
-                )
-            room.mesh.bgImages.append(
-                OOTBGImage(
-                    toAlnum(sceneName + "_bg_" + bgImage.image.name),
-                    bgImage.image,
-                    bgImage.otherModeFlags,
-                )
-            )
 
 
 def readCamPos(camPosProp, obj, scene, sceneObj, transformMatrix):
@@ -445,54 +335,27 @@ def readCamPos(camPosProp, obj, scene, sceneObj, transformMatrix):
     index = camPosProp.index
     # TODO: FOV conversion?
     if index in scene.collision.cameraData.camPosDict:
-        raise PluginError(f"Error: Repeated camera position index: {index} for {obj.name}")
+        raise PluginError("Error: Repeated camera position index: " + str(index))
     if camPosProp.camSType == "Custom":
         camSType = camPosProp.camSTypeCustom
     else:
         camSType = decomp_compat_map_CameraSType.get(camPosProp.camSType, camPosProp.camSType)
-
-    fov = math.degrees(obj.data.angle)
-    if fov > 3.6:
-        fov *= 100  # see CAM_DATA_SCALED() macro
-
     scene.collision.cameraData.camPosDict[index] = OOTCameraPosData(
         camSType,
         camPosProp.hasPositionData,
         translation,
         rotation,
-        round(fov),
-        camPosProp.bgImageOverrideIndex,
+        int(round(math.degrees(obj.data.angle))),
+        camPosProp.jfifID,
     )
-
-
-def readCrawlspace(obj, scene, transformMatrix):
-
-    splineProp = obj.ootSplineProperty
-    index = splineProp.index
-
-    if index in scene.collision.cameraData.camPosDict:
-        raise PluginError(f"Error: Repeated camera position index: {index} for {obj.name}")
-
-    if splineProp.camSType == "Custom":
-        camSType = splineProp.camSTypeCustom
-    else:
-        camSType = decomp_compat_map_CameraSType.get(splineProp.camSType, splineProp.camSType)
-
-    crawlspace = OOTCrawlspaceData(camSType)
-    spline = obj.data.splines[0]
-    for point in spline.points:
-        position = [round(value) for value in transformMatrix @ obj.matrix_world @ point.co]
-        crawlspace.points.append(position)
-
-    scene.collision.cameraData.camPosDict[index] = crawlspace
 
 
 def readPathProp(pathProp, obj, scene, sceneObj, sceneName, transformMatrix):
     relativeTransform = transformMatrix @ sceneObj.matrix_world.inverted() @ obj.matrix_world
-    # scene.pathList[obj.name] = ootConvertPath(sceneName, obj, relativeTransform)
-
-    # actorProp should be an actor, but its purpose is to access headerSettings so this also works.
-    addActor(scene, ootConvertPath(sceneName, obj, relativeTransform), obj.ootSplineProperty, "pathList", obj.name)
+    index = obj.ootSplineProperty.index
+    if index in scene.pathList:
+        raise PluginError("Error: " + obj.name + "has a repeated spline index: " + str(index))
+    scene.pathList[index] = ootConvertPath(sceneName, index, obj, relativeTransform)
 
 
 def ootConvertScene(originalSceneObj, transformMatrix, f3dType, isHWv1, sceneName, DLFormat, convertTextureData):
@@ -501,15 +364,15 @@ def ootConvertScene(originalSceneObj, transformMatrix, f3dType, isHWv1, sceneNam
         raise PluginError(originalSceneObj.name + ' is not an empty with the "Scene" empty type.')
 
     if bpy.context.scene.exportHiddenGeometry:
-        hiddenState = unhideAllAndGetHiddenState(bpy.context.scene)
+        hiddenObjs = unhideAllAndGetHiddenList(bpy.context.scene)
 
     # Don't remove ignore_render, as we want to reuse this for collision
     sceneObj, allObjs = ootDuplicateHierarchy(originalSceneObj, None, True, OOTObjectCategorizer())
 
     if bpy.context.scene.exportHiddenGeometry:
-        restoreHiddenState(hiddenState)
+        hideObjsInList(hiddenObjs)
 
-    roomObjs = [child for child in sceneObj.children_recursive if child.data is None and child.ootEmptyType == "Room"]
+    roomObjs = [child for child in sceneObj.children if child.data is None and child.ootEmptyType == "Room"]
     if len(roomObjs) == 0:
         raise PluginError("The scene has no child empties with the 'Room' empty type.")
 
@@ -518,51 +381,35 @@ def ootConvertScene(originalSceneObj, transformMatrix, f3dType, isHWv1, sceneNam
         readSceneData(scene, sceneObj.fast64.oot.scene, sceneObj.ootSceneHeader, sceneObj.ootAlternateSceneHeaders)
         processedRooms = set()
 
-        for obj in sceneObj.children_recursive:
+        for obj in sceneObj.children:
             translation, rotation, scale, orientedRotation = getConvertedTransform(transformMatrix, sceneObj, obj, True)
 
             if obj.data is None and obj.ootEmptyType == "Room":
                 roomObj = obj
-                roomHeader = roomObj.ootRoomHeader
-                roomIndex = roomHeader.roomIndex
+                roomIndex = roomObj.ootRoomHeader.roomIndex
                 if roomIndex in processedRooms:
                     raise PluginError("Error: room index " + str(roomIndex) + " is used more than once.")
                 processedRooms.add(roomIndex)
-                room = scene.addRoom(roomIndex, sceneName, roomHeader.roomShape)
-                readRoomData(sceneName, room, roomHeader, roomObj.ootAlternateRoomHeaders)
+                room = scene.addRoom(roomIndex, sceneName, roomObj.ootRoomHeader.roomShape)
+                readRoomData(room, roomObj.ootRoomHeader, roomObj.ootAlternateRoomHeaders)
 
-                if roomHeader.roomShape == "ROOM_SHAPE_TYPE_IMAGE" and len(roomHeader.bgImageList) < 1:
-                    raise PluginError(f'Room {roomObj.name} uses room shape "Image" but doesn\'t have any BG images.')
-                if roomHeader.roomShape == "ROOM_SHAPE_TYPE_IMAGE" and len(processedRooms) > 1:
-                    raise PluginError(f'Room shape "Image" can only have one room in the scene.')
-
-                cullGroup = CullGroup(translation, scale, obj.ootRoomHeader.defaultCullDistance)
-                DLGroup = room.mesh.addMeshGroup(cullGroup).DLGroup
-                boundingBox = BoundingBox()
-                ootProcessMesh(
-                    room.mesh, DLGroup, sceneObj, roomObj, transformMatrix, convertTextureData, None, boundingBox
-                )
-                centroid, radius = boundingBox.getEnclosingSphere()
-                cullGroup.position = centroid
-                cullGroup.cullDepth = radius
-
+                DLGroup = room.mesh.addMeshGroup(
+                    CullGroup(translation, scale, obj.ootRoomHeader.defaultCullDistance)
+                ).DLGroup
+                ootProcessMesh(room.mesh, DLGroup, sceneObj, roomObj, transformMatrix, convertTextureData, None)
                 room.mesh.terminateDLs()
                 room.mesh.removeUnusedEntries()
                 ootProcessEmpties(scene, room, sceneObj, roomObj, transformMatrix)
             elif obj.data is None and obj.ootEmptyType == "Water Box":
-                # 0x3F = -1 in 6bit value
                 ootProcessWaterBox(sceneObj, obj, transformMatrix, scene, 0x3F)
             elif isinstance(obj.data, bpy.types.Camera):
                 camPosProp = obj.ootCameraPositionProperty
                 readCamPos(camPosProp, obj, scene, sceneObj, transformMatrix)
             elif isinstance(obj.data, bpy.types.Curve) and assertCurveValid(obj):
-                if isPathObject(obj):
-                    readPathProp(obj.ootSplineProperty, obj, scene, sceneObj, sceneName, transformMatrix)
-                else:
-                    readCrawlspace(obj, scene, transformMatrix)
+                readPathProp(obj.ootSplineProperty, obj, scene, sceneObj, sceneName, transformMatrix)
 
         scene.validateIndices()
-        scene.sortEntrances()
+        scene.entranceList = sorted(scene.entranceList, key=lambda x: x.startPositionIndex)
         exportCollisionCommon(scene.collision, sceneObj, transformMatrix, True, sceneName)
 
         ootCleanupScene(originalSceneObj, allObjs)
@@ -574,53 +421,10 @@ def ootConvertScene(originalSceneObj, transformMatrix, f3dType, isHWv1, sceneNam
     return scene
 
 
-class BoundingBox:
-    def __init__(self):
-        self.minPoint = None
-        self.maxPoint = None
-        self.points = []
-
-    def addPoint(self, point: tuple[float, float, float]):
-        if self.minPoint is None:
-            self.minPoint = list(point[:])
-        else:
-            for i in range(3):
-                if point[i] < self.minPoint[i]:
-                    self.minPoint[i] = point[i]
-        if self.maxPoint is None:
-            self.maxPoint = list(point[:])
-        else:
-            for i in range(3):
-                if point[i] > self.maxPoint[i]:
-                    self.maxPoint[i] = point[i]
-        self.points.append(point)
-
-    def addMeshObj(self, obj: bpy.types.Object, transform: mathutils.Matrix):
-        mesh = obj.data
-        for vertex in mesh.vertices:
-            self.addPoint(transform @ vertex.co)
-
-    def getEnclosingSphere(self) -> tuple[float, float]:
-        centroid = (mathutils.Vector(self.minPoint) + mathutils.Vector(self.maxPoint)) / 2
-        radius = 0
-        for point in self.points:
-            distance = (mathutils.Vector(point) - centroid).length
-            if distance > radius:
-                radius = distance
-
-        # print(f"Radius: {radius}, Centroid: {centroid}")
-
-        transformedCentroid = [round(value) for value in centroid]
-        transformedRadius = round(radius)
-        return transformedCentroid, transformedRadius
-
-
 # This function should be called on a copy of an object
 # The copy will have modifiers / scale applied and will be made single user
 # When we duplicated obj hierarchy we stripped all ignore_renders from hierarchy.
-def ootProcessMesh(
-    roomMesh, DLGroup, sceneObj, obj, transformMatrix, convertTextureData, LODHierarchyObject, boundingBox: BoundingBox
-):
+def ootProcessMesh(roomMesh, DLGroup, sceneObj, obj, transformMatrix, convertTextureData, LODHierarchyObject):
 
     relativeTransform = transformMatrix @ sceneObj.matrix_world.inverted() @ obj.matrix_world
     translation, rotation, scale = relativeTransform.decompose()
@@ -634,14 +438,9 @@ def ootProcessMesh(
                 + LODHierarchyObject.name
             )
 
-        cullProp = obj.ootCullGroupProperty
         checkUniformScale(scale, obj)
         DLGroup = roomMesh.addMeshGroup(
-            CullGroup(
-                ootConvertTranslation(translation),
-                scale if cullProp.sizeControlsCull else [cullProp.manualRadius],
-                obj.empty_display_size if cullProp.sizeControlsCull else 1,
-            )
+            CullGroup(ootConvertTranslation(translation), scale, obj.empty_display_size)
         ).DLGroup
 
     elif isinstance(obj.data, bpy.types.Mesh) and not obj.ignore_render:
@@ -660,37 +459,19 @@ def ootProcessMesh(
             for drawLayer, fMesh in fMeshes.items():
                 DLGroup.addDLCall(fMesh.draw, drawLayer)
 
-        boundingBox.addMeshObj(obj, relativeTransform)
-
     alphabeticalChildren = sorted(obj.children, key=lambda childObj: childObj.original_name.lower())
     for childObj in alphabeticalChildren:
         if childObj.data is None and childObj.ootEmptyType == "LOD":
             ootProcessLOD(
-                roomMesh,
-                DLGroup,
-                sceneObj,
-                childObj,
-                transformMatrix,
-                convertTextureData,
-                LODHierarchyObject,
-                boundingBox,
+                roomMesh, DLGroup, sceneObj, childObj, transformMatrix, convertTextureData, LODHierarchyObject
             )
         else:
             ootProcessMesh(
-                roomMesh,
-                DLGroup,
-                sceneObj,
-                childObj,
-                transformMatrix,
-                convertTextureData,
-                LODHierarchyObject,
-                boundingBox,
+                roomMesh, DLGroup, sceneObj, childObj, transformMatrix, convertTextureData, LODHierarchyObject
             )
 
 
-def ootProcessLOD(
-    roomMesh, DLGroup, sceneObj, obj, transformMatrix, convertTextureData, LODHierarchyObject, boundingBox: BoundingBox
-):
+def ootProcessLOD(roomMesh, DLGroup, sceneObj, obj, transformMatrix, convertTextureData, LODHierarchyObject):
 
     relativeTransform = transformMatrix @ sceneObj.matrix_world.inverted() @ obj.matrix_world
     translation, rotation, scale = relativeTransform.decompose()
@@ -711,25 +492,11 @@ def ootProcessLOD(
 
         if childObj.data is None and childObj.ootEmptyType == "LOD":
             ootProcessLOD(
-                roomMesh,
-                childDLGroup,
-                sceneObj,
-                childObj,
-                transformMatrix,
-                convertTextureData,
-                LODHierarchyObject,
-                boundingBox,
+                roomMesh, childDLGroup, sceneObj, childObj, transformMatrix, convertTextureData, LODHierarchyObject
             )
         else:
             ootProcessMesh(
-                roomMesh,
-                childDLGroup,
-                sceneObj,
-                childObj,
-                transformMatrix,
-                convertTextureData,
-                LODHierarchyObject,
-                boundingBox,
+                roomMesh, childDLGroup, sceneObj, childObj, transformMatrix, convertTextureData, LODHierarchyObject
             )
 
         # We handle case with no geometry, for the cases where we have "gaps" in the LOD hierarchy.
@@ -754,74 +521,39 @@ def ootProcessEmpties(scene, room, sceneObj, obj, transformMatrix):
     if obj.data is None:
         if obj.ootEmptyType == "Actor":
             actorProp = obj.ootActorProperty
-
-            # The Actor list is filled with ``("None", f"{i} (Deleted from the XML)", "None")`` for
-            # the total number of actors defined in the XML. If the user deletes one, this will prevent
-            # any data loss as Blender saves the index of the element in the Actor list used for the EnumProperty
-            # and not the identifier as defined by the first element of the tuple. Therefore, we need to check if
-            # the current Actor has the ID `None` to avoid export issues.
-            if actorProp.actorID != "None":
-                if actorProp.rotOverride:
-                    actorRot = ", ".join([actorProp.rotOverrideX, actorProp.rotOverrideY, actorProp.rotOverrideZ])
-                else:
-                    actorRot = ", ".join(f"DEG_TO_BINANG({(rot * (180 / 0x8000)):.3f})" for rot in rotation)
-
-                actorName = (
-                    ootData.actorData.actorsByID[actorProp.actorID].name.replace(
-                        f" - {actorProp.actorID.removeprefix('ACTOR_')}", ""
-                    )
-                    if actorProp.actorID != "Custom"
-                    else "Custom Actor"
-                )
-
-                addActor(
-                    room,
-                    OOTActor(
-                        actorName,
-                        getCustomProperty(actorProp, "actorID"),
-                        translation,
-                        actorRot,
-                        actorProp.actorParam,
-                    ),
-                    actorProp,
-                    "actorList",
-                    obj.name,
-                )
+            addActor(
+                room,
+                OOTActor(
+                    getCustomProperty(actorProp, "actorID"),
+                    translation,
+                    rotation,
+                    actorProp.actorParam,
+                    None
+                    if not actorProp.rotOverride
+                    else (actorProp.rotOverrideX, actorProp.rotOverrideY, actorProp.rotOverrideZ),
+                ),
+                actorProp,
+                "actorList",
+                obj.name,
+            )
         elif obj.ootEmptyType == "Transition Actor":
             transActorProp = obj.ootTransitionActorProperty
-            if transActorProp.actor.actorID != "None":
-                if transActorProp.dontTransition:
-                    front = (255, getCustomProperty(transActorProp, "cameraTransitionBack"))
-                    back = (room.roomIndex, getCustomProperty(transActorProp, "cameraTransitionFront"))
-                else:
-                    front = (room.roomIndex, getCustomProperty(transActorProp, "cameraTransitionFront"))
-                    back = (transActorProp.roomIndex, getCustomProperty(transActorProp, "cameraTransitionBack"))
-
-                transActorName = (
-                    ootData.actorData.actorsByID[transActorProp.actor.actorID].name.replace(
-                        f" - {transActorProp.actor.actorID.removeprefix('ACTOR_')}", ""
-                    )
-                    if transActorProp.actor.actorID != "Custom"
-                    else "Custom Actor"
-                )
-
-                addActor(
-                    scene,
-                    OOTTransitionActor(
-                        transActorName,
-                        getCustomProperty(transActorProp.actor, "actorID"),
-                        front[0],
-                        back[0],
-                        front[1],
-                        back[1],
-                        translation,
-                        rotation[1],  # TODO: Correct axis?
-                        transActorProp.actor.actorParam,
-                    ),
-                    transActorProp.actor,
-                    "transitionActorList",
-                    obj.name,
-                )
+            addActor(
+                scene,
+                OOTTransitionActor(
+                    getCustomProperty(transActorProp.actor, "actorID"),
+                    room.roomIndex,
+                    transActorProp.roomIndex,
+                    getCustomProperty(transActorProp, "cameraTransitionFront"),
+                    getCustomProperty(transActorProp, "cameraTransitionBack"),
+                    translation,
+                    rotation[1],  # TODO: Correct axis?
+                    transActorProp.actor.actorParam,
+                ),
+                transActorProp.actor,
+                "transitionActorList",
+                obj.name,
+            )
         elif obj.ootEmptyType == "Entrance":
             entranceProp = obj.ootEntranceProperty
             spawnIndex = obj.ootEntranceProperty.spawnIndex
@@ -830,11 +562,11 @@ def ootProcessEmpties(scene, room, sceneObj, obj, transformMatrix):
                 scene,
                 spawnIndex,
                 OOTActor(
-                    "",
                     "ACTOR_PLAYER" if not entranceProp.customActor else entranceProp.actor.actorIDCustom,
                     translation,
-                    ", ".join(f"DEG_TO_BINANG({(rot * (180 / 0x8000)):.3f})" for rot in rotation),
+                    rotation,
                     entranceProp.actor.actorParam,
+                    None,
                 ),
                 entranceProp.actor,
                 obj.name,
@@ -845,10 +577,7 @@ def ootProcessEmpties(scene, room, sceneObj, obj, transformMatrix):
         camPosProp = obj.ootCameraPositionProperty
         readCamPos(camPosProp, obj, scene, sceneObj, transformMatrix)
     elif isinstance(obj.data, bpy.types.Curve) and assertCurveValid(obj):
-        if isPathObject(obj):
-            readPathProp(obj.ootSplineProperty, obj, scene, sceneObj, scene.name, transformMatrix)
-        else:
-            readCrawlspace(obj, scene, transformMatrix)
+        readPathProp(obj.ootSplineProperty, obj, scene, sceneObj, scene.name, transformMatrix)
 
     for childObj in obj.children:
         ootProcessEmpties(scene, room, sceneObj, childObj, transformMatrix)
@@ -864,9 +593,180 @@ def ootProcessWaterBox(sceneObj, obj, transformMatrix, scene, roomIndex):
             roomIndex,
             getCustomProperty(waterBoxProp, "lighting"),
             getCustomProperty(waterBoxProp, "camera"),
-            waterBoxProp.flag19,
             translation,
             scale,
             obj.empty_display_size,
         )
     )
+
+
+class OOT_ExportScene(bpy.types.Operator):
+    bl_idname = "object.oot_export_level"
+    bl_label = "Export Scene"
+    bl_options = {"REGISTER", "UNDO", "PRESET"}
+
+    def execute(self, context):
+        activeObj = None
+        try:
+            if context.mode != "OBJECT":
+                bpy.ops.object.mode_set(mode="OBJECT")
+            activeObj = context.view_layer.objects.active
+
+            obj = context.scene.ootSceneExportObj
+            if obj is None:
+                raise PluginError("Scene object input not set.")
+            elif obj.data is not None or obj.ootEmptyType != "Scene":
+                raise PluginError("The input object is not an empty with the Scene type.")
+
+            scaleValue = bpy.context.scene.ootBlenderScale
+            finalTransform = mathutils.Matrix.Diagonal(mathutils.Vector((scaleValue, scaleValue, scaleValue))).to_4x4()
+
+        except Exception as e:
+            raisePluginError(self, e)
+            return {"CANCELLED"}
+        try:
+            levelName = context.scene.ootSceneName
+            if context.scene.ootSceneCustomExport:
+                exportInfo = ExportInfo(True, bpy.path.abspath(context.scene.ootSceneExportPath), None, levelName)
+            else:
+                if context.scene.ootSceneOption == "Custom":
+                    subfolder = "assets/scenes/" + context.scene.ootSceneSubFolder + "/"
+                else:
+                    levelName = sceneNameFromID(context.scene.ootSceneOption)
+                    subfolder = None
+                exportInfo = ExportInfo(False, bpy.path.abspath(context.scene.ootDecompPath), subfolder, levelName)
+
+            ootExportSceneToC(
+                obj,
+                finalTransform,
+                context.scene.f3d_type,
+                context.scene.isHWv1,
+                levelName,
+                DLFormat.Static,
+                context.scene.saveTextures or bpy.context.scene.ignoreTextureRestrictions,
+                exportInfo,
+            )
+
+            self.report({"INFO"}, "Success!")
+
+            context.view_layer.objects.active = activeObj
+            if activeObj is not None:
+                activeObj.select_set(True)
+
+            return {"FINISHED"}
+
+        except Exception as e:
+            if context.mode != "OBJECT":
+                bpy.ops.object.mode_set(mode="OBJECT")
+            context.view_layer.objects.active = activeObj
+            if activeObj is not None:
+                activeObj.select_set(True)
+            raisePluginError(self, e)
+            return {"CANCELLED"}
+
+
+def ootRemoveSceneC(exportInfo):
+    modifySceneTable(None, exportInfo)
+    modifySegmentDefinition(None, exportInfo, None)
+    deleteSceneFiles(exportInfo)
+
+
+class OOT_RemoveScene(bpy.types.Operator):
+    bl_idname = "object.oot_remove_level"
+    bl_label = "Remove Scene"
+    bl_options = {"REGISTER", "UNDO", "PRESET"}
+
+    def execute(self, context):
+        levelName = context.scene.ootSceneName
+        if context.scene.ootSceneCustomExport:
+            operator.report({"ERROR"}, "You can only remove scenes from your decomp path.")
+            return {"FINISHED"}
+
+        if context.scene.ootSceneOption == "Custom":
+            subfolder = "assets/scenes/" + context.scene.ootSceneSubFolder + "/"
+        else:
+            levelName = sceneNameFromID(context.scene.ootSceneOption)
+            subfolder = None
+        exportInfo = ExportInfo(False, bpy.path.abspath(context.scene.ootDecompPath), subfolder, levelName)
+
+        ootRemoveSceneC(exportInfo)
+
+        self.report({"INFO"}, "Success!")
+        return {"FINISHED"}
+
+
+class OOT_ExportScenePanel(OOT_Panel):
+    bl_idname = "OOT_PT_export_level"
+    bl_label = "OOT Scene Exporter"
+
+    def draw(self, context):
+        col = self.layout.column()
+        col.operator(OOT_ExportScene.bl_idname)
+        # if not bpy.context.scene.ignoreTextureRestrictions:
+        # 	col.prop(context.scene, 'saveTextures')
+        prop_split(col, context.scene, "ootSceneExportObj", "Scene Object")
+        col.prop(context.scene, "ootSceneSingleFile")
+        col.prop(context.scene, "ootSceneCustomExport")
+        if context.scene.ootSceneCustomExport:
+            prop_split(col, context.scene, "ootSceneExportPath", "Directory")
+            prop_split(col, context.scene, "ootSceneName", "Name")
+            customExportWarning(col)
+        else:
+            col.operator(OOT_SearchSceneEnumOperator.bl_idname, icon="VIEWZOOM")
+            col.box().column().label(text=getEnumName(ootEnumSceneID, context.scene.ootSceneOption))
+            # col.prop(context.scene, 'ootSceneOption')
+            if context.scene.ootSceneOption == "Custom":
+                prop_split(col, context.scene, "ootSceneSubFolder", "Subfolder")
+                prop_split(col, context.scene, "ootSceneName", "Name")
+            col.operator(OOT_RemoveScene.bl_idname)
+
+
+def isSceneObj(self, obj):
+    return obj.data is None and obj.ootEmptyType == "Scene"
+
+
+oot_level_classes = (
+    OOT_ExportScene,
+    OOT_RemoveScene,
+)
+
+oot_level_panel_classes = (OOT_ExportScenePanel,)
+
+
+def oot_level_panel_register():
+    for cls in oot_level_panel_classes:
+        register_class(cls)
+
+
+def oot_level_panel_unregister():
+    for cls in oot_level_panel_classes:
+        unregister_class(cls)
+
+
+def oot_level_register():
+    for cls in oot_level_classes:
+        register_class(cls)
+
+    bpy.types.Scene.ootSceneName = bpy.props.StringProperty(name="Name", default="spot03")
+    bpy.types.Scene.ootSceneSubFolder = bpy.props.StringProperty(name="Subfolder", default="overworld")
+    bpy.types.Scene.ootSceneOption = bpy.props.EnumProperty(name="Scene", items=ootEnumSceneID, default="SCENE_YDAN")
+    bpy.types.Scene.ootSceneExportPath = bpy.props.StringProperty(name="Directory", subtype="FILE_PATH")
+    bpy.types.Scene.ootSceneCustomExport = bpy.props.BoolProperty(name="Custom Export Path")
+    bpy.types.Scene.ootSceneExportObj = bpy.props.PointerProperty(type=bpy.types.Object, poll=isSceneObj)
+    bpy.types.Scene.ootSceneSingleFile = bpy.props.BoolProperty(
+        name="Export as Single File",
+        default=False,
+        description="Does not split the scene and rooms into multiple files.",
+    )
+
+
+def oot_level_unregister():
+    for cls in reversed(oot_level_classes):
+        unregister_class(cls)
+
+    del bpy.types.Scene.ootSceneName
+    del bpy.types.Scene.ootSceneExportPath
+    del bpy.types.Scene.ootSceneCustomExport
+    del bpy.types.Scene.ootSceneOption
+    del bpy.types.Scene.ootSceneSubFolder
+    del bpy.types.Scene.ootSceneSingleFile

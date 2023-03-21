@@ -1,27 +1,9 @@
-import bpy, math, os, re
-from ast import parse, Expression, Num, UnaryOp, USub, Invert, BinOp
+from ..utility import *
+import bpy, math, mathutils, os, re
 from bpy.utils import register_class, unregister_class
-from typing import Callable
-from .oot_constants import ootSceneIDToName
 
-from ..utility import (
-    PluginError,
-    prop_split,
-    getDataFromFile,
-    saveDataToFile,
-    attemptModifierApply,
-    setOrigin,
-    applyRotation,
-    cleanupDuplicatedObjects,
-    ootGetSceneOrRoomHeader,
-    hexOrDecInt,
-    binOps,
-)
-
-
-def isPathObject(obj: bpy.types.Object) -> bool:
-    return obj.data is not None and isinstance(obj.data, bpy.types.Curve) and obj.ootSplineProperty.splineType == "Path"
-
+# default indentation to use when writing to decomp files
+indent = " " * 4
 
 ootSceneDungeons = [
     "bdan",
@@ -159,21 +141,6 @@ ootSceneDirs = {
     "assets/scenes/shops/": ootSceneShops,
     "assets/scenes/test_levels/": ootSceneTest_levels,
 }
-
-
-def sceneNameFromID(sceneID):
-    if sceneID in ootSceneIDToName:
-        return ootSceneIDToName[sceneID]
-    else:
-        raise PluginError("Cannot find scene ID " + str(sceneID))
-
-
-def getOOTScale(actorScale: float) -> float:
-    return bpy.context.scene.ootBlenderScale * actorScale
-
-
-def replaceMatchContent(data: str, newContent: str, match: re.Match, index: int) -> str:
-    return data[: match.start(index)] + newContent + data[match.end(index) :]
 
 
 def addIncludeFiles(objectName, objectPath, assetName):
@@ -382,7 +349,7 @@ def ootGetPath(exportPath, isCustomExport, subPath, folderName, makeIfNotExists,
     else:
         if bpy.context.scene.ootDecompPath == "":
             raise PluginError("Decomp base path is empty.")
-        path = bpy.path.abspath(os.path.join(os.path.join(bpy.context.scene.ootDecompPath, subPath), folderName))
+        path = bpy.path.abspath(os.path.join(bpy.context.scene.ootDecompPath, subPath + folderName))
 
     if not os.path.exists(path):
         if isCustomExport or makeIfNotExists:
@@ -395,29 +362,20 @@ def ootGetPath(exportPath, isCustomExport, subPath, folderName, makeIfNotExists,
 
 def getSortedChildren(armatureObj, bone):
     return sorted(
-        [child.name for child in bone.children if child.ootBone.boneType != "Ignore"],
+        [child.name for child in bone.children if child.ootBoneType != "Ignore"],
         key=lambda childName: childName.lower(),
     )
 
 
 def getStartBone(armatureObj):
     startBoneNames = [
-        bone.name for bone in armatureObj.data.bones if bone.parent is None and bone.ootBone.boneType != "Ignore"
+        bone.name for bone in armatureObj.data.bones if bone.parent is None and bone.ootBoneType != "Ignore"
     ]
     if len(startBoneNames) == 0:
         raise PluginError(armatureObj.name + ' does not have any root bones that are not of the "Ignore" type.')
     startBoneName = startBoneNames[0]
     return startBoneName
     # return 'root'
-
-
-def getNextBone(boneStack: list[str], armatureObj: bpy.types.Object):
-    if len(boneStack) == 0:
-        raise PluginError("More bones in animation than on armature.")
-    bone = armatureObj.data.bones[boneStack[0]]
-    boneStack = boneStack[1:]
-    boneStack = getSortedChildren(armatureObj, bone) + boneStack
-    return bone, boneStack
 
 
 def checkForStartBone(armatureObj):
@@ -448,25 +406,6 @@ class CullGroup:
     def __init__(self, position, scale, emptyScale):
         self.position = [int(round(field)) for field in position]
         self.cullDepth = abs(int(round(scale[0] * emptyScale)))
-
-
-def setCustomProperty(data: any, prop: str, value: str, enumList: list[tuple[str, str, str]] | None):
-    if enumList is not None:
-        if value in [enumItem[0] for enumItem in enumList]:
-            setattr(data, prop, value)
-            return
-        else:
-            try:
-                numberValue = hexOrDecInt(value)
-                hexValue = f'0x{format(numberValue, "02X")}'
-                if hexValue in [enumItem[0] for enumItem in enumList]:
-                    setattr(data, prop, hexValue)
-                    return
-            except ValueError:
-                pass
-
-    setattr(data, prop, "Custom")
-    setattr(data, prop + str("Custom"), value)
 
 
 def getCustomProperty(data, prop):
@@ -500,16 +439,6 @@ def ootConvertRotation(rotation):
     return [int(round((math.degrees(value) % 360) / 360 * (2**16))) % (2**16) for value in rotation.to_euler()]
 
 
-# parse rotaion in Vec3s format
-def ootParseRotation(values):
-    return [
-        math.radians(
-            (int.from_bytes(value.to_bytes(2, "big", signed=value < 0x8000), "big", signed=False) / 2**16) * 360
-        )
-        for value in values
-    ]
-
-
 def getCutsceneName(obj):
     name = obj.name
     if name.startswith("Cutscene."):
@@ -519,8 +448,32 @@ def getCutsceneName(obj):
 
 
 def getCollectionFromIndex(obj, prop, subIndex, isRoom):
-    header = ootGetSceneOrRoomHeader(obj, subIndex, isRoom)
-    return getattr(header, prop)
+    if not isRoom:
+        header0 = obj.ootSceneHeader
+        header1 = obj.ootAlternateSceneHeaders.childNightHeader
+        header2 = obj.ootAlternateSceneHeaders.adultDayHeader
+        header3 = obj.ootAlternateSceneHeaders.adultNightHeader
+        cutsceneHeaders = obj.ootAlternateSceneHeaders.cutsceneHeaders
+    else:
+        header0 = obj.ootRoomHeader
+        header1 = obj.ootAlternateRoomHeaders.childNightHeader
+        header2 = obj.ootAlternateRoomHeaders.adultDayHeader
+        header3 = obj.ootAlternateRoomHeaders.adultNightHeader
+        cutsceneHeaders = obj.ootAlternateRoomHeaders.cutsceneHeaders
+
+    if subIndex < 0:
+        raise PluginError("Alternate scene header index too low: " + str(subIndex))
+    elif subIndex == 0:
+        collection = getattr(header0, prop)
+    elif subIndex == 1:
+        collection = getattr(header1, prop)
+    elif subIndex == 2:
+        collection = getattr(header2, prop)
+    elif subIndex == 3:
+        collection = getattr(header3, prop)
+    else:
+        collection = getattr(cutsceneHeaders[subIndex - 4], prop)
+    return collection
 
 
 # Operators cannot store mutable references (?), so to reuse PropertyCollection modification code we do this.
@@ -544,8 +497,6 @@ def getCollection(objName, collectionType, subIndex):
         collection = getCollectionFromIndex(obj, "exitList", subIndex, False)
     elif collectionType == "Object":
         collection = getCollectionFromIndex(obj, "objectList", subIndex, True)
-    elif collectionType == "Curve":
-        collection = obj.ootSplineProperty.headerSettings.cutsceneHeaders
     elif collectionType.startswith("CSHdr."):
         # CSHdr.HeaderNumber[.ListType]
         # Specifying ListType means uses subIndex
@@ -565,8 +516,6 @@ def getCollection(objName, collectionType, subIndex):
         collection = obj.ootCutsceneProperty.csLists
     elif collectionType == "extraCutscenes":
         collection = obj.ootSceneHeader.extraCutscenes
-    elif collectionType == "BgImage":
-        collection = obj.ootRoomHeader.bgImageList
     else:
         raise PluginError("Invalid collection type: " + collectionType)
 
@@ -583,36 +532,33 @@ def drawAddButton(layout, index, collectionType, subIndex, objName):
     addOp.objName = objName
 
 
-def drawCollectionOps(layout, index, collectionType, subIndex, objName, allowAdd=True, compact=False):
+def drawCollectionOps(layout, index, collectionType, subIndex, objName, allowAdd=True):
     if subIndex is None:
         subIndex = 0
 
-    if not compact:
-        buttons = layout.row(align=True)
-    else:
-        buttons = layout
+    buttons = layout.row(align=True)
 
     if allowAdd:
-        addOp = buttons.operator(OOTCollectionAdd.bl_idname, text="Add" if not compact else "", icon="ADD")
+        addOp = buttons.operator(OOTCollectionAdd.bl_idname, text="Add", icon="ADD")
         addOp.option = index + 1
         addOp.collectionType = collectionType
         addOp.subIndex = subIndex
         addOp.objName = objName
 
-    removeOp = buttons.operator(OOTCollectionRemove.bl_idname, text="Delete" if not compact else "", icon="REMOVE")
+    removeOp = buttons.operator(OOTCollectionRemove.bl_idname, text="Delete", icon="REMOVE")
     removeOp.option = index
     removeOp.collectionType = collectionType
     removeOp.subIndex = subIndex
     removeOp.objName = objName
 
-    moveUp = buttons.operator(OOTCollectionMove.bl_idname, text="Up" if not compact else "", icon="TRIA_UP")
+    moveUp = buttons.operator(OOTCollectionMove.bl_idname, text="Up", icon="TRIA_UP")
     moveUp.option = index
     moveUp.offset = -1
     moveUp.collectionType = collectionType
     moveUp.subIndex = subIndex
     moveUp.objName = objName
 
-    moveDown = buttons.operator(OOTCollectionMove.bl_idname, text="Down" if not compact else "", icon="TRIA_DOWN")
+    moveDown = buttons.operator(OOTCollectionMove.bl_idname, text="Down", icon="TRIA_DOWN")
     moveDown.option = index
     moveDown.offset = 1
     moveDown.collectionType = collectionType
@@ -672,25 +618,6 @@ class OOTCollectionMove(bpy.types.Operator):
         return {"FINISHED"}
 
 
-def getHeaderSettings(actorObj: bpy.types.Object):
-    itemType = actorObj.ootEmptyType
-    if actorObj.data is None:
-        if itemType == "Actor":
-            headerSettings = actorObj.ootActorProperty.headerSettings
-        elif itemType == "Entrance":
-            headerSettings = actorObj.ootEntranceProperty.actor.headerSettings
-        elif itemType == "Transition Actor":
-            headerSettings = actorObj.ootTransitionActorProperty.actor.headerSettings
-        else:
-            headerSettings = None
-    elif actorObj.data is not None and isPathObject(actorObj):
-        headerSettings = actorObj.ootSplineProperty.headerSettings
-    else:
-        headerSettings = None
-
-    return headerSettings
-
-
 oot_utility_classes = (
     OOTCollectionAdd,
     OOTCollectionRemove,
@@ -706,158 +633,3 @@ def oot_utility_register():
 def oot_utility_unregister():
     for cls in reversed(oot_utility_classes):
         unregister_class(cls)
-
-
-def getActiveHeaderIndex() -> int:
-    # All scenes/rooms should have synchronized tabs from property callbacks
-    headerObjs = [obj for obj in bpy.data.objects if obj.ootEmptyType == "Scene" or obj.ootEmptyType == "Room"]
-    if len(headerObjs) == 0:
-        return 0
-
-    headerObj = headerObjs[0]
-    if headerObj.ootEmptyType == "Scene":
-        header = headerObj.ootSceneHeader
-        altHeader = headerObj.ootAlternateSceneHeaders
-    else:
-        header = headerObj.ootRoomHeader
-        altHeader = headerObj.ootAlternateRoomHeaders
-
-    if header.menuTab != "Alternate":
-        headerIndex = 0
-    else:
-        if altHeader.headerMenuTab == "Child Night":
-            headerIndex = 1
-        elif altHeader.headerMenuTab == "Adult Day":
-            headerIndex = 2
-        elif altHeader.headerMenuTab == "Adult Night":
-            headerIndex = 3
-        else:
-            headerIndex = altHeader.currentCutsceneIndex
-
-    return (
-        headerIndex,
-        altHeader.childNightHeader.usePreviousHeader,
-        altHeader.adultDayHeader.usePreviousHeader,
-        altHeader.adultNightHeader.usePreviousHeader,
-    )
-
-
-def setAllActorsVisibility(self, context: bpy.types.Context):
-    activeHeaderInfo = getActiveHeaderIndex()
-
-    actorObjs = [
-        obj
-        for obj in bpy.data.objects
-        if obj.ootEmptyType in ["Actor", "Transition Actor", "Entrance"] or isPathObject(obj)
-    ]
-
-    for actorObj in actorObjs:
-        setActorVisibility(actorObj, activeHeaderInfo)
-
-
-def setActorVisibility(actorObj: bpy.types.Object, activeHeaderInfo: tuple[int, bool, bool, bool]):
-    headerIndex, childNightHeader, adultDayHeader, adultNightHeader = activeHeaderInfo
-    usePreviousHeader = [False, childNightHeader, adultDayHeader, adultNightHeader]
-    if headerIndex < 4:
-        while usePreviousHeader[headerIndex]:
-            headerIndex -= 1
-
-    headerSettings = getHeaderSettings(actorObj)
-    if headerSettings is None:
-        return
-    if headerSettings.sceneSetupPreset == "All Scene Setups":
-        actorObj.hide_set(False)
-    elif headerSettings.sceneSetupPreset == "All Non-Cutscene Scene Setups":
-        actorObj.hide_set(headerIndex >= 4)
-    elif headerSettings.sceneSetupPreset == "Custom":
-        actorObj.hide_set(not headerSettings.checkHeader(headerIndex))
-    else:
-        print("Error: unhandled header case")
-
-
-def onMenuTabChange(self, context: bpy.types.Context):
-    def callback(thisHeader, otherObj: bpy.types.Object):
-        if otherObj.ootEmptyType == "Scene":
-            header = otherObj.ootSceneHeader
-        else:
-            header = otherObj.ootRoomHeader
-
-        if thisHeader.menuTab != "Alternate" and header.menuTab == "Alternate":
-            header.menuTab = "General"
-        if thisHeader.menuTab == "Alternate" and header.menuTab != "Alternate":
-            header.menuTab = "Alternate"
-
-    onHeaderPropertyChange(self, context, callback)
-
-
-def onHeaderMenuTabChange(self, context: bpy.types.Context):
-    def callback(thisHeader, otherObj: bpy.types.Object):
-        if otherObj.ootEmptyType == "Scene":
-            header = otherObj.ootAlternateSceneHeaders
-        else:
-            header = otherObj.ootAlternateRoomHeaders
-
-        header.headerMenuTab = thisHeader.headerMenuTab
-        header.currentCutsceneIndex = thisHeader.currentCutsceneIndex
-
-    onHeaderPropertyChange(self, context, callback)
-
-
-def onHeaderPropertyChange(self, context: bpy.types.Context, callback: Callable[[any, bpy.types.Object], None]):
-    if not bpy.context.scene.fast64.oot.headerTabAffectsVisibility or bpy.context.scene.ootActiveHeaderLock:
-        return
-    bpy.context.scene.ootActiveHeaderLock = True
-
-    thisHeader = self
-    thisObj = context.object
-    otherObjs = [
-        obj
-        for obj in bpy.data.objects
-        if (obj.ootEmptyType == "Scene" or obj.ootEmptyType == "Room") and obj != thisObj
-    ]
-
-    for otherObj in otherObjs:
-        callback(thisHeader, otherObj)
-
-    setAllActorsVisibility(self, context)
-
-    bpy.context.scene.ootActiveHeaderLock = False
-
-
-def getEvalParams(input: str):
-    """Evaluates a string to an hexadecimal number"""
-
-    # degrees to binary angle conversion
-    if "DEG_TO_BINANG(" in input:
-        input = input.strip().removeprefix("DEG_TO_BINANG(").removesuffix(")").strip()
-        return f"0x{round(float(input) * (0x8000 / 180)):X}"
-
-    if input is None or "None" in input:
-        return "0x0"
-
-    # remove spaces
-    input = input.strip()
-
-    try:
-        node = parse(input, mode="eval")
-    except Exception as e:
-        raise ValueError(f"Could not parse {input} as an AST.") from e
-
-    def _eval(node):
-        if isinstance(node, Expression):
-            return _eval(node.body)
-        elif isinstance(node, Num):
-            return node.n
-        elif isinstance(node, UnaryOp):
-            if isinstance(node.op, USub):
-                return -_eval(node.operand)
-            elif isinstance(node.op, Invert):
-                return ~_eval(node.operand)
-            else:
-                raise ValueError(f"Unsupported unary operator {node.op}")
-        elif isinstance(node, BinOp):
-            return binOps[type(node.op)](_eval(node.left), _eval(node.right))
-        else:
-            raise ValueError(f"Unsupported AST node {node}")
-
-    return f"0x{_eval(node.body):X}"
