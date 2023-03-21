@@ -5,9 +5,8 @@
 
 ![alt-text](/images/mario_running.gif)
 
-### Credits
-Thanks to anonymous_moose, Cheezepin, Rovert, and especially InTheBeef for testing.
-Thanks to InTheBeef for LowPolySkinnedMario.
+### Fast64 Credits
+- Thanks to anonymous_moose, Cheezepin, Rovert, and especially InTheBeef for testing.
 
 ### Table of Contents
 1. [ Super Mario 64 ](/fast64_internal/sm64/README.md)
