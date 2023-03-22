@@ -177,13 +177,15 @@ def getLastKeyframeTime(keyframes):
 # add definition to groupN.h
 # add data/table includes to groupN.c (bin_id?)
 # add data/table files
-def exportAnimationC(armatureObj, loopAnim, dirPath, dirName, groupName,
+def exportAnimationC(armatureObj, loopAnim, dirPath, dirName, animID, groupName,
 	customExport, headerType, levelName):
 	dirPath, texDir = getExportDir(customExport, dirPath, headerType, 
 		levelName, '', dirName)
 
-	sm64_anim = exportAnimationCommon(armatureObj, loopAnim, dirName + "_anim")
-	animName = armatureObj.animation_data.action.name
+	if dirName != "mario":
+		sm64_anim = exportAnimationCommon(armatureObj, loopAnim, dirName + "_anim")
+	else:
+		sm64_anim = exportAnimationCommon(armatureObj, loopAnim, "MarioAnimID")
 
 	geoDirPath = os.path.join(dirPath, toAlnum(dirName))
 	if not os.path.exists(geoDirPath):
@@ -194,7 +196,9 @@ def exportAnimationC(armatureObj, loopAnim, dirPath, dirName, groupName,
 		os.mkdir(animDirPath)
 
 	animsName = dirName + '_anims'
-	animFileName = 'anim_' + toAlnum(animName) + '.inc.c'
+	if dirName != "mario":
+		animID = armatureObj.animation_data.action.name
+	animFileName = toAlnum(animID) + '.inc.c'
 	animPath = os.path.join(animDirPath, animFileName)
 
 	data = sm64_anim.to_c()
@@ -202,28 +206,28 @@ def exportAnimationC(armatureObj, loopAnim, dirPath, dirName, groupName,
 	outFile.write(data.source)
 	outFile.close()
 
-	headerPath = os.path.join(geoDirPath, 'anim_header.h')
-	headerFile = open(headerPath, 'w', newline='\n')
-	headerFile.write('extern const struct Animation *const ' + animsName + '[];\n')
-	headerFile.close()
+	if not customExport or (customExport and dirName != "mario"):
+		headerPath = os.path.join(geoDirPath, 'anim_header.h')
+		headerFile = open(headerPath, 'w', newline='\n')
+		headerFile.write('extern const struct Animation *const ' + animsName + '[];\n')
+		headerFile.close()
 
-	# write to data.inc.c
-	dataFilePath = os.path.join(animDirPath, 'data.inc.c')
-	if not os.path.exists(dataFilePath):
-		dataFile = open(dataFilePath, 'w', newline='\n')
-		dataFile.close()
-	writeIfNotFound(dataFilePath, '#include "' + animFileName + '"\n', '')
+		# write to data.inc.c
+		dataFilePath = os.path.join(animDirPath, 'data.inc.c')
+		if not os.path.exists(dataFilePath):
+			dataFile = open(dataFilePath, 'w', newline='\n')
+			dataFile.close()
+		writeIfNotFound(dataFilePath, '#include "' + animFileName + '"\n', '')
 
-	# write to table.inc.c
-	tableFilePath = os.path.join(animDirPath, 'table.inc.c')
-	if not os.path.exists(tableFilePath):
-		tableFile = open(tableFilePath, 'w', newline='\n')
-		tableFile.write('const struct Animation *const ' + \
-			animsName + '[] = {\n\tNULL,\n};\n')
-		tableFile.close()
-	writeIfNotFound(tableFilePath, '\t&' + sm64_anim.header.name + ',\n', '\tNULL,\n};')
+		# write to table.inc.c
+		tableFilePath = os.path.join(animDirPath, 'table.inc.c')
+		if not os.path.exists(tableFilePath):
+			tableFile = open(tableFilePath, 'w', newline='\n')
+			tableFile.write('const struct Animation *const ' + \
+				animsName + '[] = {\n\tNULL,\n};\n')
+			tableFile.close()
+		writeIfNotFound(tableFilePath, '\t&' + sm64_anim.header.name + ',\n', '\tNULL,\n};')
 
-	if not customExport:
 		if headerType == 'Actor':
 			groupPathC = os.path.join(dirPath, groupName + ".c")
 			groupPathH = os.path.join(dirPath, groupName + ".h")
@@ -308,7 +312,11 @@ def exportAnimationCommon(armatureObj, loopAnim, name):
 		armatureObj.animation_data.action is None:
 		raise PluginError("No active animation selected.")
 	anim = armatureObj.animation_data.action
-	sm64_anim = SM64_Animation(toAlnum(name + "_" + anim.name))
+
+	if name == "MarioAnimID":
+		sm64_anim = SM64_Animation(toAlnum(bpy.context.scene.animExportID))
+	else:
+		sm64_anim = SM64_Animation(toAlnum(name + "_" + anim.name))
 
 	nodeCount = len(armatureObj.data.bones)
 
@@ -667,16 +675,16 @@ class SM64_ExportAnimMario(bpy.types.Operator):
 				if not context.scene.animCustomExport:
 					applyBasicTweaks(exportPath)
 
-				if context.scene.animJsonExport:
-					exportAnimationJSON(
-						bpy.path.abspath(context.scene.animJsonPath),
-						armatureObj, context.scene.loopAnimation,
-						context.scene.animJsonName, context.scene.animJsonAuthor)
-					self.report({'INFO'}, 'Success! Exported JSON animation to ' +\
-						context.scene.animJsonPath)
+					if context.scene.animJsonExport:
+						exportAnimationJSON(
+							bpy.path.abspath(context.scene.animJsonPath),
+							armatureObj, context.scene.loopAnimation,
+							context.scene.animJsonName, context.scene.animJsonAuthor)
+						self.report({'INFO'}, 'Success! Exported JSON animation to ' +\
+							context.scene.animJsonPath)
 				else:
 					exportAnimationC(armatureObj, context.scene.loopAnimation, 
-						exportPath, bpy.context.scene.animName,
+						exportPath, bpy.context.scene.animName, bpy.context.scene.animExportID,
 						bpy.context.scene.animGroupName,
 						context.scene.animCustomExport, context.scene.animExportHeaderType, levelName)
 					self.report({'INFO'}, 'Success!')
@@ -788,6 +796,8 @@ class SM64_ExportAnimPanel(SM64_Panel):
 			if context.scene.animCustomExport:
 				col.prop(context.scene, 'animExportPath')
 				prop_split(col, context.scene, 'animName', 'Name')
+				if context.scene.animName == 'mario':
+					prop_split(col, context.scene, 'animExportID', 'Mario Anim ID')
 				customExportWarning(col)
 			elif context.scene.animJsonExport and not context.scene.animCustomExport:
 				col.prop(context.scene, 'animJsonName')
@@ -948,7 +958,9 @@ def sm64_anim_register():
 	bpy.types.Scene.addr_0x28 = bpy.props.StringProperty(
 		name = '0x28 Command Address', default = '21CD08')
 	bpy.types.Scene.animExportPath = bpy.props.StringProperty(
-		name = 'Directory', subtype = 'FILE_PATH')
+		name = 'Folder Name', subtype = 'FILE_PATH')
+	bpy.types.Scene.animExportID = bpy.props.StringProperty(
+		name = 'ID', default = 'anim_C2')
 	bpy.types.Scene.animOverwriteDMAEntry = bpy.props.BoolProperty(
 		name = 'Overwrite DMA Entry')
 	bpy.types.Scene.animInsertableBinaryPath = bpy.props.StringProperty(
@@ -1003,6 +1015,7 @@ def sm64_anim_unregister():
 	del bpy.types.Scene.addr_0x27
 	del bpy.types.Scene.addr_0x28
 	del bpy.types.Scene.animExportPath
+	del bpy.types.Scene.animExportID
 	del bpy.types.Scene.animOverwriteDMAEntry
 	del bpy.types.Scene.animInsertableBinaryPath
 	del bpy.types.Scene.animIsSegPtr
