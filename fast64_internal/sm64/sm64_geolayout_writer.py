@@ -2401,6 +2401,12 @@ class SM64_ExportGeolayoutArmature(bpy.types.Operator):
 					None, bpy.context.scene.geoGroupName, context.scene.geoExportHeaderType,
 					context.scene.geoName, context.scene.geoStructName, levelName, context.scene.geoCustomExport, DLFormat.Static)
 				starSelectWarning(self, fileStatus)
+
+				# delete geo bin
+				if context.scene.geoCustomExport:
+					if os.path.exists(context.scene.geoExportPath + "/" + context.scene.geoName + "_geo.bin"):
+						os.remove(context.scene.geoExportPath + "/" + context.scene.geoName + "_geo.bin")
+
 				self.report({'INFO'}, 'Success!')
 			elif context.scene.fast64.sm64.exportType == 'Insertable Binary':
 				exportGeolayoutArmatureInsertableBinary(armatureObj, obj,
