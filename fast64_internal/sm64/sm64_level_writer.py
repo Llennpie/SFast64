@@ -1191,6 +1191,10 @@ class SM64_ExportLevel(ObjectDataExporter):
             cameraWarning(self, fileStatus)
             starSelectWarning(self, fileStatus)
 
+            if context.scene.levelCustomExport:
+                if os.path.exists(context.scene.levelExportPath + "/level_" + context.scene.levelName.title() + "_entry.lvl"):
+                    os.remove(context.scene.levelExportPath + "/level_" + context.scene.levelName.title() + "_entry.lvl")
+
             applyRotation([obj], math.radians(-90), "X")
             self.cleanup_temp_object_data()
 
