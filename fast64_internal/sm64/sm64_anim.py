@@ -405,13 +405,15 @@ def exportAnimationJSON(filepath, armatureObj, loop, name, author, extra_bone):
     outFile.write(data)
     outFile.close()
 
-    # write to json file
-    # hahahaha shameless rewrite of the c export func
     dataFilePath = filepath
     if not os.path.exists(dataFilePath):
         dataFile = open(dataFilePath, 'w', newline='\n')
         dataFile.close()
     writeIfNotFound(dataFilePath, '', '')    
+
+    existingPAnimPath = filepath.replace('.json', '.panim')
+	if os.path.exists(existingPAnimPath):
+		os.remove(existingPAnimPath)
 
 def exportAnimationCommon(armatureObj, loopAnim, name):
     if armatureObj.animation_data is None or armatureObj.animation_data.action is None:
