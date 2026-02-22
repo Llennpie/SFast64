@@ -1008,6 +1008,10 @@ class SM64_ExportLevel(ObjectDataExporter):
 				context.scene.saveTextures or bpy.context.scene.ignoreTextureRestrictions, 
 				context.scene.levelCustomExport, triggerName, DLFormat.Static)
 
+			if context.scene.levelCustomExport:
+				if os.path.exists(context.scene.levelExportPath + "/level_" + context.scene.levelName.title() + "_entry.lvl"):
+					os.remove(context.scene.levelExportPath + "/level_" + context.scene.levelName.title() + "_entry.lvl")
+
 			cameraWarning(self, fileStatus)
 			starSelectWarning(self, fileStatus)
 
