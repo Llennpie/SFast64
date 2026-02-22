@@ -806,6 +806,7 @@ class SM64_ExportAnimMario(bpy.types.Operator):
             return {"CANCELLED"}
 
         try:
+            bpy.context.scene.tool_settings.use_keyframe_insert_auto = False
             # Rotate all armatures 90 degrees
             applyRotation([armatureObj], math.radians(90), "X")
 
