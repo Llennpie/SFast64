@@ -244,6 +244,11 @@ def exportAnimationC(armatureObj, loopAnim, dirPath, dirName, animID, groupName,
 			writeIfNotFound(groupPathC, '\n#include "levels/' + levelName + '/' + dirName + '/anims/table.inc.c"', '')
 			writeIfNotFound(groupPathH, '\n#include "levels/' + levelName + '/' + dirName + '/anim_header.h"', '\n#endif')
 
+	# delete geo bin
+	if customExport and dirName == "mario":
+		if os.path.exists(dirPath + "/" + dirName + "_geo.bin"):
+			os.remove(dirPath + "/" + dirName + "_geo.bin")
+
 def exportAnimationBinary(romfile, exportRange, armatureObj, DMAAddresses,
 	segmentData, isDMA, loopAnim):
 
@@ -300,13 +305,15 @@ def exportAnimationJSON(filepath, armatureObj, loop, name, author, extra_bone):
 	outFile.write(data)
 	outFile.close()
 
-	# write to json file
-	# hahahaha shameless rewrite of the c export func
 	dataFilePath = filepath
 	if not os.path.exists(dataFilePath):
 		dataFile = open(dataFilePath, 'w', newline='\n')
 		dataFile.close()
 	writeIfNotFound(dataFilePath, '', '')	
+
+	existingPAnimPath = filepath.replace('.json', '.panim')
+	if os.path.exists(existingPAnimPath):
+		os.remove(existingPAnimPath)
 
 def exportAnimationCommon(armatureObj, loopAnim, name):
 	if armatureObj.animation_data is None or \
