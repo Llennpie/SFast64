@@ -412,8 +412,8 @@ def exportAnimationJSON(filepath, armatureObj, loop, name, author, extra_bone):
     writeIfNotFound(dataFilePath, '', '')    
 
     existingPAnimPath = filepath.replace('.json', '.panim')
-	if os.path.exists(existingPAnimPath):
-		os.remove(existingPAnimPath)
+    if os.path.exists(existingPAnimPath):
+        os.remove(existingPAnimPath)
 
 def exportAnimationCommon(armatureObj, loopAnim, name):
     if armatureObj.animation_data is None or armatureObj.animation_data.action is None:
