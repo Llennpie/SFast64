@@ -20,17 +20,19 @@ enumBoneType = [
 	("Ignore", "Ignore", "Ignore bones when exporting."),
 	("SwitchOption", "Switch Option", "Switch Option"),
 	("DisplayListWithOffset", "Animated Part (0x13)", "Animated Part (Animatable Bone)"),
-	("MetalComposerBone", "MComp Extra Bone (Saturn)", "MComp Extra Bone (Saturn)"),
+	("MetalComposerBone", "Extra Bone (Saturn)", "Extra, animatable bone AKA MComp Bone (Saturn)"),
+	("ExtraWiggleBone", "Wiggle Bone (Pluto)", "Extra, animatable bone with physics parameters (Pluto)"),
 	("CustomAnimated", "Custom Animated", "Custom Bone used for animation"),
 	("CustomNonAnimated", "Custom (Non-animated)", "Custom geolayout bone, non animated"),
 ]
 
-animatableBoneTypes = {"DisplayListWithOffset", "CustomAnimated", "MetalComposerBone"}
+animatableBoneTypes = {"DisplayListWithOffset", "CustomAnimated", "MetalComposerBone", "ExtraWiggleBone"}
 
 enumGeoStaticType = [
 	("Billboard", "Billboard (0x14)", "Billboard"), 
 	("DisplayListWithOffset", "Animated Part (0x13)", "Animated Part (Animatable Bone)"),
-	("MetalComposerBone", "MComp Extra Bone (Saturn)", "MComp Extra Bone (Saturn)"),
+	("MetalComposerBone", "Extra Bone (Saturn)", "Extra, animatable bone AKA MComp Bone (Saturn)"),
+	("ExtraWiggleBone", "Wiggle Bone (Pluto)", "Extra, animatable bone with physics parameters (Pluto)"),
 	("Optimal", "Optimal", "Optimal"),
 ]
 
@@ -76,7 +78,7 @@ def drawGeoInfo(panel: bpy.types.Panel, bone: bpy.types.Bone):
 	prop_split(col, bone, 'geo_cmd', 'Geolayout Command')
 
 	if bone.geo_cmd in ['TranslateRotate', 'Translate', 'Rotate', 
-		'Billboard', 'DisplayList', 'Scale', 'DisplayListWithOffset', 'MetalComposerBone', 'CustomAnimated']:
+		'Billboard', 'DisplayList', 'Scale', 'DisplayListWithOffset', 'MetalComposerBone', 'ExtraWiggleBone', 'CustomAnimated']:
 		drawLayerWarningBox(col, bone, "draw_layer")
 
 	if bone.geo_cmd == 'Scale':
@@ -107,6 +109,16 @@ def drawGeoInfo(panel: bpy.types.Panel, bone: bpy.types.Bone):
 		prop_split(col, bone, 'shadow_type', 'Type')
 		prop_split(col, bone, 'shadow_solidity', 'Alpha')
 		prop_split(col, bone, 'shadow_scale', 'Scale')
+
+	elif bone.geo_cmd == 'ExtraWiggleBone':
+		infoBoxWiggle = col.box()
+		infoBoxWiggle.label(text = 'The parent bone must be an Animated Part,', icon = 'INFO')
+		infoBoxWiggle.label(text = 'Extra Bone, or another Wiggle Bone.')
+		prop_split(col, bone, 'wiggle_smooth', 'Smoothness')
+		prop_split(col, bone, 'wiggle_max_dist', 'Max Distance')
+		prop_split(col, bone, 'wiggle_snap_smooth', 'Snap Smooth')
+		prop_split(col, bone, 'wiggle_spring_k', 'Spring Stiffness')
+		prop_split(col, bone, 'wiggle_spring_damp', 'Spring Damping')
 	
 	elif bone.geo_cmd == 'StartRenderArea':
 		infoBoxRenderArea = col.box()
@@ -487,6 +499,23 @@ def sm64_bone_register():
 	
 	bpy.types.Bone.shadow_scale = bpy.props.IntProperty(
 		name = 'Shadow Scale', min = -2**(15), max = 2**(15) - 1, default = 100)
+
+	# ExtraWiggleBone
+	bpy.types.Bone.wiggle_smooth = bpy.props.IntProperty(
+		name = 'Wiggle Smooth', min = 0, max = 100, default = 10,
+		description = 'Lag amount ×100 (0 = frozen, 100 = instant)')
+	bpy.types.Bone.wiggle_max_dist = bpy.props.IntProperty(
+		name = 'Wiggle Max Dist', min = 0, max = 2**(15) - 1, default = 25,
+		description = 'Maximum translation drift in game units')
+	bpy.types.Bone.wiggle_snap_smooth = bpy.props.IntProperty(
+		name = 'Wiggle Snap Smooth', min = 0, max = 100, default = 80,
+		description = 'Catch-up rate during snap animations ×100')
+	bpy.types.Bone.wiggle_spring_k = bpy.props.IntProperty(
+		name = 'Spring Stiffness', min = 0, max = 100, default = 30,
+		description = 'Spring stiffness ×100 (higher = snaps back faster, less lag)')
+	bpy.types.Bone.wiggle_spring_damp = bpy.props.IntProperty(
+		name = 'Spring Damping', min = 0, max = 100, default = 65,
+		description = 'Spring damping ×100 (lower = bouncier/more overshoot, higher = stiffer)')
 
 	#bpy.types.Bone.switch_bone = bpy.props.StringProperty(
 	#	name = 'Switch Bone')

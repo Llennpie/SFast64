@@ -17,6 +17,8 @@ class SM64_Animation:
 		self.header = None
 		self.indices = SM64_ShortArray(name + '_indices', False)
 		self.values = SM64_ShortArray(name + '_values', True)
+		self.boneTranslations = []  # list[list[tuple[s16,s16,s16]]] all non-root animatable bones
+		self.boneScales = []  # list[list[tuple[f32,f32,f32]]] all non-root animatable bones (1.0 = identity)
 	
 	def get_ptr_offsets(self, isDMA):
 		return [12, 16] if not isDMA else []
@@ -38,6 +40,85 @@ class SM64_Animation:
 		return '{\n\t' + self.header.to_json(friendlyName, friendlyAuthor, extra_bone) + ',\n\t' +\
 			self.values.to_json(assigned_name="values") + ',\n\t' +\
 			self.indices.to_json(assigned_name="indices") + '}'
+
+	def to_panim(self, name, author):
+		# i actually LOVE python bro look how simple byte handling is
+		data = bytearray()
+		# Name: 64 bytes, null-padded
+		name_enc = name.encode('utf-8')[:64]
+		data += name_enc + bytearray(64 - len(name_enc))
+		# Author: 32 bytes, null-padded
+		author_enc = author.encode('utf-8')[:32]
+		data += author_enc + bytearray(32 - len(author_enc))
+		# Looping flag: 0xA6 if looping, else 0x00
+		data += bytearray([0xA6 if self.header.repetitions < 1 else 0x00])
+		# Length: 2 bytes big-endian
+		length = int(round(self.header.frameInterval[1] - 1))
+		data += bytearray([(length >> 8) & 0xFF, length & 0xFF])
+		# Node count: 1 byte (capped at 255)
+		data += bytearray([min(self.header.nodeCount, 255)])
+		# Values section
+		data += b'values'
+		data += self.values.to_binary()
+		# Indices section
+		data += b'indices'
+		data += self.indices.to_binary()
+		# Translations section (optional)
+		# boneTranslations covers all non-root animatable bones (bone 0 is the root, driven
+		# by the SM64 anim system). Use a presence bitmask so all-zero bones are omitted.
+		# Format: b'translations' + 2-byte frame_count + 2-byte bone_count + bitmask + data
+		if self.boneTranslations:
+			custom_count = len(self.boneTranslations)
+			frame_count = len(self.boneTranslations[0]) if self.boneTranslations[0] else 0
+			bitmask_size = (custom_count + 7) // 8
+			bitmask = bytearray(bitmask_size)
+			bone_parts = []
+			for bi, boneFrames in enumerate(self.boneTranslations):
+				if any(tx != 0 or ty != 0 or tz != 0 for (tx, ty, tz) in boneFrames):
+					bitmask[bi // 8] |= (1 << (bi % 8))
+					part = bytearray()
+					for (tx, ty, tz) in boneFrames:
+						part += (tx & 0xFFFF).to_bytes(2, 'big')
+						part += (ty & 0xFFFF).to_bytes(2, 'big')
+						part += (tz & 0xFFFF).to_bytes(2, 'big')
+					bone_parts.append(bytes(part))
+			if any(b != 0 for b in bitmask):
+				data += b'translations'
+				data += frame_count.to_bytes(2, 'big')
+				data += custom_count.to_bytes(2, 'big')
+				data += bitmask
+				for part in bone_parts:
+					data += part
+		# Scales section (optional)
+		# boneScales covers all non-root animatable bones; identity = (1.0, 1.0, 1.0).
+		# Format: b'scales' + 2-byte frame_count + 2-byte bone_count + bitmask + data
+		# Scale encoding: s16 = round(scale * 1024), so 1024 = 1.0x
+		if self.boneScales:
+			SCALE_UNIT = 1024
+			custom_count = len(self.boneScales)
+			frame_count = len(self.boneScales[0]) if self.boneScales[0] else 0
+			bitmask_size = (custom_count + 7) // 8
+			bitmask = bytearray(bitmask_size)
+			bone_parts = []
+			for bi, boneFrames in enumerate(self.boneScales):
+				if any(abs(sx - 1.0) > 0.0005 or abs(sy - 1.0) > 0.0005 or abs(sz - 1.0) > 0.0005
+					   for (sx, sy, sz) in boneFrames):
+					bitmask[bi // 8] |= (1 << (bi % 8))
+					part = bytearray()
+					clamp_s16 = lambda v: max(-32768, min(32767, int(round(v))))
+					for (sx, sy, sz) in boneFrames:
+						part += (clamp_s16(sx * SCALE_UNIT) & 0xFFFF).to_bytes(2, 'big')
+						part += (clamp_s16(sy * SCALE_UNIT) & 0xFFFF).to_bytes(2, 'big')
+						part += (clamp_s16(sz * SCALE_UNIT) & 0xFFFF).to_bytes(2, 'big')
+					bone_parts.append(bytes(part))
+			if any(b != 0 for b in bitmask):
+				data += b'scales'
+				data += frame_count.to_bytes(2, 'big')
+				data += custom_count.to_bytes(2, 'big')
+				data += bitmask
+				for part in bone_parts:
+					data += part
+		return bytes(data)
 
 class SM64_ShortArray:
 	def __init__(self, name, signed):
@@ -315,6 +396,12 @@ def exportAnimationJSON(filepath, armatureObj, loop, name, author, extra_bone):
 	if os.path.exists(existingPAnimPath):
 		os.remove(existingPAnimPath)
 
+def exportAnimationPAnim(filepath, armatureObj, loop, name, author):
+	sm64_anim = exportAnimationCommon(armatureObj, loop, "")
+	data = sm64_anim.to_panim(name, author)
+	with open(filepath, 'wb') as outFile:
+		outFile.write(data)
+
 def exportAnimationCommon(armatureObj, loopAnim, name):
 	if armatureObj.animation_data is None or \
 		armatureObj.animation_data.action is None:
@@ -330,7 +417,7 @@ def exportAnimationCommon(armatureObj, loopAnim, name):
 
 	frame_start, frame_last = getFrameInterval(anim)
 
-	translationData, armatureFrameData = convertAnimationData(
+	translationData, armatureFrameData, boneTranslationData, boneScaleData = convertAnimationData(
 		anim,
 		armatureObj,
 		frame_start=frame_start,
@@ -380,6 +467,9 @@ def exportAnimationCommon(armatureObj, loopAnim, name):
 		marioYOffset, [frame_start, frame_last + 1], nodeCount, transformValuesStart, 
 		transformIndicesStart, animSize)
 	
+	# Skip bone 0 (root); export translations and scales for all remaining non-root animatable bones.
+	sm64_anim.boneTranslations = boneTranslationData[1:]
+	sm64_anim.boneScales = boneScaleData[1:]
 	return sm64_anim
 	
 def convertAnimationData(anim, armatureObj, *, frame_start, frame_count):
@@ -408,6 +498,8 @@ def convertAnimationData(anim, armatureObj, *, frame_start, frame_count):
 		ValueFrameData(i, 0, []),
 		ValueFrameData(i, 1, []),
 		ValueFrameData(i, 2, [])] for i in range(len(animBones))]
+	boneTranslationData = [[] for _ in range(len(animBones))]  # [bone_idx][frame] = (tx, ty, tz)
+	boneScaleData = [[] for _ in range(len(animBones))]  # [bone_idx][frame] = (sx, sy, sz)
 
 	currentFrame = bpy.context.scene.frame_current
 	for frame in range(frame_start, frame_start + frame_count):
@@ -437,13 +529,31 @@ def convertAnimationData(anim, armatureObj, *, frame_start, frame_count):
 				# rest pose local, compared to current pose local
 			
 			saveQuaternionFrame(armatureFrameData[boneIndex], rotationValue)
+
+			# Collect per-bone local translation delta (pose_bone.location is already the
+			# offset from rest pose in bone-local space)
+			scale = bpy.context.scene.blenderToSM64Scale
+			loc = currentPoseBone.location
+			clamp16 = lambda v: max(-32768, min(32767, int(round(v))))
+			boneTranslationData[boneIndex].append((
+				clamp16(loc.x * scale),
+				clamp16(loc.y * scale),
+				clamp16(loc.z * scale),
+			))
+			# Collect per-bone scale (pose_bone.scale is bone-local; (1,1,1) = rest pose)
+			s = currentPoseBone.scale
+			boneScaleData[boneIndex].append((s.x, s.y, s.z))
 	
 	bpy.context.scene.frame_set(currentFrame)
 	removeTrailingFrames(translationData)
 	for frameData in armatureFrameData:
 		removeTrailingFrames(frameData)
 
-	return translationData, armatureFrameData
+	boneIsCustomData = [
+		armatureObj.data.bones[name].geo_cmd in {'MetalComposerBone', 'ExtraWiggleBone'}
+		for name in animBones
+	]
+	return translationData, armatureFrameData, boneTranslationData, boneScaleData
 
 def getNextBone(boneStack, armatureObj):
 	if len(boneStack) == 0:
@@ -678,20 +788,26 @@ class SM64_ExportAnimMario(bpy.types.Operator):
 				math.radians(90), 'X')
 
 			if context.scene.fast64.sm64.exportType == 'C':
-				exportPath, levelName = getPathAndLevel(context.scene.animCustomExport, 
-					context.scene.animExportPath, context.scene.animLevelName, 
-					context.scene.animLevelOption)
-				if not context.scene.animCustomExport:
-					applyBasicTweaks(exportPath)
-
-					if context.scene.animJsonExport:
-						exportAnimationJSON(
-							bpy.path.abspath(context.scene.animJsonPath),
-							armatureObj, context.scene.loopAnimation,
-							context.scene.animJsonName, context.scene.animJsonAuthor, context.scene.animJsonExtraBone)
-						self.report({'INFO'}, 'Success! Exported JSON animation to ' +\
-							context.scene.animJsonPath)
+				if context.scene.animExportFormat == 'JSON':
+					exportAnimationJSON(
+						bpy.path.abspath(context.scene.animJsonPath),
+						armatureObj, context.scene.loopAnimation,
+						context.scene.animJsonName, context.scene.animJsonAuthor, context.scene.animJsonExtraBone)
+					self.report({'INFO'}, 'Success! Exported JSON animation to ' +\
+						context.scene.animJsonPath)
+				elif context.scene.animExportFormat == 'PAnim':
+					exportAnimationPAnim(
+						bpy.path.abspath(context.scene.animPAnimPath),
+						armatureObj, context.scene.loopAnimation,
+						context.scene.animJsonName, context.scene.animJsonAuthor)
+					self.report({'INFO'}, 'Success! Exported PAnim animation to ' +\
+						context.scene.animPAnimPath)
 				else:
+					exportPath, levelName = getPathAndLevel(context.scene.animCustomExport, 
+						context.scene.animExportPath, context.scene.animLevelName, 
+						context.scene.animLevelOption)
+					if not context.scene.animCustomExport:
+						applyBasicTweaks(exportPath)
 					exportAnimationC(armatureObj, context.scene.loopAnimation, 
 						exportPath, bpy.context.scene.animName, bpy.context.scene.animExportID,
 						bpy.context.scene.animGroupName,
@@ -798,21 +914,25 @@ class SM64_ExportAnimPanel(SM64_Panel):
 		col.prop(context.scene, 'loopAnimation')
 
 		if context.scene.fast64.sm64.exportType == 'C':
-			col.prop(context.scene, 'animCustomExport')
-			if not context.scene.animCustomExport:
-				col.prop(context.scene, 'animJsonExport')
+			prop_split(col, context.scene, 'animExportFormat', 'Export Format')
+			if context.scene.animExportFormat == 'C':
+				col.prop(context.scene, 'animCustomExport')
 
-			if context.scene.animCustomExport:
+			if context.scene.animExportFormat == 'C' and context.scene.animCustomExport:
 				col.prop(context.scene, 'animExportPath')
 				prop_split(col, context.scene, 'animName', 'Name')
 				if context.scene.animName == 'mario':
 					prop_split(col, context.scene, 'animExportID', 'Mario Anim ID')
 				customExportWarning(col)
-			elif context.scene.animJsonExport and not context.scene.animCustomExport:
+			elif context.scene.animExportFormat == 'JSON':
 				col.prop(context.scene, 'animJsonName')
 				col.prop(context.scene, 'animJsonAuthor')
 				col.prop(context.scene, 'animJsonPath')
 				col.prop(context.scene, 'animJsonExtraBone')
+			elif context.scene.animExportFormat == 'PAnim':
+				col.prop(context.scene, 'animJsonName')
+				col.prop(context.scene, 'animJsonAuthor')
+				col.prop(context.scene, 'animPAnimPath')
 			else:
 				prop_split(col, context.scene, 'animExportHeaderType', 'Export Type')
 				prop_split(col, context.scene, 'animName', 'Name')
@@ -991,16 +1111,24 @@ def sm64_anim_register():
 		name = 'Write Headers For Actor', default = True)
 	bpy.types.Scene.animCustomExport = bpy.props.BoolProperty(
 		name = 'Custom Export Path')
-	bpy.types.Scene.animJsonExport = bpy.props.BoolProperty(
-		name = 'Export to JSON')
+	bpy.types.Scene.animExportFormat = bpy.props.EnumProperty(
+		name = 'Export Format',
+		items = [
+			('C', 'C', 'Export as C source'),
+			('JSON', 'JSON', 'Export as JSON animation'),
+			('PAnim', 'PAnim', 'Export as PAnim binary'),
+		],
+		default = 'C')
 	bpy.types.Scene.animJsonPath = bpy.props.StringProperty(
 		name = 'JSON Path', subtype = 'FILE_PATH')
 	bpy.types.Scene.animJsonName = bpy.props.StringProperty(
-		name = 'Name', default = 'Custom Animation')
+		name = 'Name', default = 'Custom Animation', maxlen = 64)
 	bpy.types.Scene.animJsonAuthor = bpy.props.StringProperty(
-		name = 'Author', default = 'sm64rise')
+		name = 'Author', default = 'sm64rise', maxlen = 32)
 	bpy.types.Scene.animJsonExtraBone = bpy.props.BoolProperty(
 		name = 'Extra MComp+ Bone')
+	bpy.types.Scene.animPAnimPath = bpy.props.StringProperty(
+		name = 'PAnim Path', subtype = 'FILE_PATH')
 	bpy.types.Scene.animExportHeaderType = bpy.props.EnumProperty(
 		items = enumExportHeaderType, name = 'Header Export', default = 'Actor')
 	bpy.types.Scene.animLevelName = bpy.props.StringProperty(name = 'Level', 
@@ -1038,9 +1166,10 @@ def sm64_anim_unregister():
 	del bpy.types.Scene.animGroupName
 	del bpy.types.Scene.animWriteHeaders
 	del bpy.types.Scene.animCustomExport
-	del bpy.types.Scene.animJsonExport
+	del bpy.types.Scene.animExportFormat
 	del bpy.types.Scene.animJsonPath
 	del bpy.types.Scene.animJsonExtraBone
+	del bpy.types.Scene.animPAnimPath
 	del bpy.types.Scene.animExportHeaderType
 	del bpy.types.Scene.animLevelName
 	del bpy.types.Scene.animLevelOption

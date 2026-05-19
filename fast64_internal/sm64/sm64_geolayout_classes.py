@@ -942,6 +942,58 @@ class MetalComposerBoneNode(BaseDisplayListNode):
 		]
 		return f"GEO_MCOMP_EXTRA({join_c_args(args)}),"
 
+class ExtraWiggleBoneNode(BaseDisplayListNode):
+	def __init__(self, drawLayer, use_deform, translate, wiggle_smooth=10, wiggle_max_dist=25, wiggle_snap_smooth=80, wiggle_spring_k=30, wiggle_spring_damp=65, dlRef: str = None):
+		self.drawLayer = drawLayer
+		self.hasDL = use_deform
+		self.translate = translate
+		self.wiggle_smooth = wiggle_smooth
+		self.wiggle_max_dist = wiggle_max_dist
+		self.wiggle_snap_smooth = wiggle_snap_smooth
+		self.wiggle_spring_k = wiggle_spring_k
+		self.wiggle_spring_damp = wiggle_spring_damp
+		self.fMesh = None
+		self.DLmicrocode = None
+		self.dlRef = dlRef
+
+	def size(self):
+		return 24  # 0x18 bytes: cmd(1)+layer(1)+x(2)+y(2)+z(2)+smooth(2)+maxDist(2)+snapSmooth(2)+springK(2)+springDamp(2)+pad(2)+ptr(4)
+
+	def get_ptr_offsets(self):
+		return [20] if self.hasDL else []
+
+	def to_binary(self, segmentData):
+		command = bytearray([GEO_EXTRA_WIGGLE, int(self.drawLayer)])
+		writeVectorToShorts(command, 2, self.translate)
+		command += struct.pack('>hhhhhh',
+			int(self.wiggle_smooth),
+			int(self.wiggle_max_dist),
+			int(self.wiggle_snap_smooth),
+			int(self.wiggle_spring_k),
+			int(self.wiggle_spring_damp),
+			0)
+		start_address = self.get_dl_address()
+		if start_address is not None and segmentData is not None:
+			command.extend(encodeSegmentedAddr(start_address, segmentData))
+		else:
+			command.extend(bytearray([0x00] * 4))
+		return command
+
+	def to_c(self):
+		args = [
+			getDrawLayerName(self.drawLayer),
+			str(convertFloatToShort(self.translate[0])),
+			str(convertFloatToShort(self.translate[1])),
+			str(convertFloatToShort(self.translate[2])),
+			self.get_dl_name(),
+			str(int(self.wiggle_smooth)),
+			str(int(self.wiggle_max_dist)),
+			str(int(self.wiggle_snap_smooth)),
+			str(int(self.wiggle_spring_k)),
+			str(int(self.wiggle_spring_damp)),
+		]
+		return f"GEO_EXTRA_WIGGLE({join_c_args(args)}),"
+
 class ScreenAreaNode:
 	def __init__(self, useDefaults, entryMinus2Count, position, dimensions):
 		self.useDefaults = useDefaults
@@ -1172,6 +1224,7 @@ nodeGroupClasses = [
 	RotateNode,
 	DisplayListWithOffsetNode,
 	MetalComposerBoneNode,
+	ExtraWiggleBoneNode,
 	BillboardNode,
 	ShadowNode,
 	ScaleNode,
@@ -1195,5 +1248,6 @@ DLNodes = [
 	DisplayListNode,
 	DisplayListWithOffsetNode,
 	MetalComposerBoneNode,
+	ExtraWiggleBoneNode,
 	CustomAnimatedNode
 ]

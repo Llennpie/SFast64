@@ -1006,6 +1006,21 @@ def processMesh(
 				node = MetalComposerBoneNode(int(obj.draw_layer_static), True,
 					translate)
 
+		elif obj.geo_cmd_static == "ExtraWiggleBone":
+			if not zeroRotation or not zeroScaleChange:
+				node = ExtraWiggleBoneNode(int(obj.draw_layer_static), True,
+					mathutils.Vector((0,0,0)))
+
+				parentTransformNode = addParentNode(parentTransformNode,
+					TranslateRotateNode(1, 0, False, translate, rotate))
+
+				if not zeroScaleChange:
+					parentTransformNode = addParentNode(parentTransformNode,
+						ScaleNode(int(obj.draw_layer_static), scale[0], False))
+			else:
+				node = ExtraWiggleBoneNode(int(obj.draw_layer_static), True,
+					translate)
+
 		else: # Billboard
 			if not zeroRotation or not zeroScaleChange: # If rotated or scaled
 				# Order here MUST be billboard with translation -> rotation -> scale -> displaylist
@@ -1194,6 +1209,24 @@ def processBone(fModel, boneName, obj, armatureObj, transformMatrix,
 			else:
 				node = MetalComposerBoneNode(int(bone.draw_layer),
 					hasDL, translate)
+				lastTranslateName = boneName
+		elif bone.geo_cmd == 'ExtraWiggleBone':
+			if not zeroRotation:
+				node = ExtraWiggleBoneNode(int(bone.draw_layer),
+					hasDL, mathutils.Vector((0,0,0)),
+					bone.wiggle_smooth, bone.wiggle_max_dist, bone.wiggle_snap_smooth,
+					bone.wiggle_spring_k, bone.wiggle_spring_damp)
+
+				parentTransformNode = addParentNode(parentTransformNode,
+					TranslateRotateNode(1, 0, False, translate, rotate))
+
+				lastTranslateName = boneName
+				lastRotateName = boneName
+			else:
+				node = ExtraWiggleBoneNode(int(bone.draw_layer),
+					hasDL, translate,
+					bone.wiggle_smooth, bone.wiggle_max_dist, bone.wiggle_snap_smooth,
+					bone.wiggle_spring_k, bone.wiggle_spring_damp)
 				lastTranslateName = boneName
 		else: # DisplayListWithOffset
 			if not zeroRotation:
@@ -2216,6 +2249,16 @@ class SM64_ExportGeolayoutObject(ObjectDataExporter):
 					None, bpy.context.scene.geoGroupName,
 					context.scene.geoExportHeaderType,
 					context.scene.geoName, context.scene.geoStructName, levelName, context.scene.geoCustomExport, DLFormat.Static)
+				if context.scene.geoCustomExport:
+					geoDirPath = os.path.join(exportPath, toAlnum(context.scene.geoName))
+					metaTxtPath = os.path.join(geoDirPath, 'meta.txt')
+					with open(metaTxtPath, 'w', newline='\n') as metaFile:
+						if context.scene.geoModelName:
+							metaFile.write('Name ' + context.scene.geoModelName + '\n')
+						if context.scene.geoModelAuthor:
+							metaFile.write('Author ' + context.scene.geoModelAuthor + '\n')
+						if context.scene.geoModelVersion:
+							metaFile.write('Version ' + context.scene.geoModelVersion + '\n')
 				self.report({'INFO'}, 'Success!')
 			elif context.scene.fast64.sm64.exportType == 'Insertable Binary':
 				exportGeolayoutObjectInsertableBinary(obj,
@@ -2312,6 +2355,21 @@ class SM64_ExportGeolayoutObject(ObjectDataExporter):
 			raisePluginError(self, e)
 			return {'CANCELLED'} # must return a set
 
+def collectAnimatableBoneNamesDFS(armatureObj):
+	result = []
+	def dfs(boneName):
+		bone = armatureObj.data.bones[boneName]
+		if bone.geo_cmd == 'Ignore':
+			return
+		if bone.geo_cmd in animatableBoneTypes:
+			result.append(bone.name)
+		for child in sorted(bone.children, key=lambda b: b.name):
+			dfs(child.name)
+	startBoneNames = findStartBones(armatureObj)
+	for startBoneName in startBoneNames:
+		dfs(startBoneName)
+	return result
+
 class SM64_ExportGeolayoutArmature(bpy.types.Operator):
 	# set bl_ properties
 	bl_idname = 'object.sm64_export_geolayout_armature'
@@ -2406,6 +2464,21 @@ class SM64_ExportGeolayoutArmature(bpy.types.Operator):
 				if context.scene.geoCustomExport:
 					if os.path.exists(context.scene.geoExportPath + "/" + context.scene.geoName + "_geo.bin"):
 						os.remove(context.scene.geoExportPath + "/" + context.scene.geoName + "_geo.bin")
+					geoDirPath = os.path.join(exportPath, toAlnum(context.scene.geoName))
+					metaTxtPath = os.path.join(geoDirPath, 'meta.txt')
+					with open(metaTxtPath, 'w', newline='\n') as metaFile:
+						if context.scene.geoModelName:
+							metaFile.write('Name ' + context.scene.geoModelName + '\n')
+						if context.scene.geoModelAuthor:
+							metaFile.write('Author ' + context.scene.geoModelAuthor + '\n')
+						if context.scene.geoModelVersion:
+							metaFile.write('Version ' + context.scene.geoModelVersion + '\n')
+					boneNames = collectAnimatableBoneNamesDFS(armatureObj)
+					if boneNames:
+						bonesTxtPath = os.path.join(geoDirPath, 'bones.txt')
+						with open(bonesTxtPath, 'w', newline='\n') as bonesFile:
+							for name in boneNames:
+								bonesFile.write(name + '\n')
 
 				self.report({'INFO'}, 'Success!')
 			elif context.scene.fast64.sm64.exportType == 'Insertable Binary':
@@ -2527,6 +2600,9 @@ class SM64_ExportGeolayoutPanel(SM64_Panel):
 				col.prop(context.scene, 'geoExportPath')
 				prop_split(col, context.scene, 'geoName', 'Folder Name')
 				prop_split(col, context.scene, 'geoStructName', 'Geolayout Name')
+				prop_split(col, context.scene, 'geoModelName', 'Model Name')
+				prop_split(col, context.scene, 'geoModelAuthor', 'Model Author')
+				prop_split(col, context.scene, 'geoModelVersion', 'Model Version')
 				customExportWarning(col)
 			else:
 				prop_split(col, context.scene, 'geoExportHeaderType', 'Export Type')
@@ -2700,6 +2776,12 @@ def sm64_geo_writer_register():
 		name = 'Rename old geolayout to avoid conflicts', default = True)
 	bpy.types.Scene.geoStructName = bpy.props.StringProperty(name = 'Geolayout Name',
 		default = 'mario_geo')
+	bpy.types.Scene.geoModelName = bpy.props.StringProperty(
+		name = 'Model Name', default = '', maxlen = 20)
+	bpy.types.Scene.geoModelAuthor = bpy.props.StringProperty(
+		name = 'Model Author', default = '', maxlen = 20)
+	bpy.types.Scene.geoModelVersion = bpy.props.StringProperty(
+		name = 'Model Version', default = '', maxlen = 5)
 
 def sm64_geo_writer_unregister():
 	for cls in reversed(sm64_geo_writer_classes):
@@ -2731,3 +2813,6 @@ def sm64_geo_writer_unregister():
 	del bpy.types.Scene.replaceCapRefs
 	del bpy.types.Scene.modifyOldGeo
 	del bpy.types.Scene.geoStructName
+	del bpy.types.Scene.geoModelName
+	del bpy.types.Scene.geoModelAuthor
+	del bpy.types.Scene.geoModelVersion
