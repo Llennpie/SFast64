@@ -532,17 +532,25 @@ def convertAnimationData(anim, armatureObj, *, frame_start, frame_count):
 
 			# Collect per-bone local translation delta (pose_bone.location is already the
 			# offset from rest pose in bone-local space)
-			scale = bpy.context.scene.blenderToSM64Scale
-			loc = currentPoseBone.location
+			if currentBone.parent is not None:
+				# i loathe matrix math
+				# but this should fix any ik shit
+				local_rest = currentBone.parent.matrix_local.inverted() @ currentBone.matrix_local
+				delta_mat = (local_rest.inverted() @
+					currentPoseBone.parent.matrix.inverted() @
+					currentPoseBone.matrix)
+				loc, _, scale_vec = delta_mat.decompose()
+			else:
+				loc = currentPoseBone.location
+				scale_vec = currentPoseBone.scale
 			clamp16 = lambda v: max(-32768, min(32767, int(round(v))))
 			boneTranslationData[boneIndex].append((
-				clamp16(loc.x * scale),
-				clamp16(loc.y * scale),
-				clamp16(loc.z * scale),
+				clamp16(loc.x * bpy.context.scene.blenderToSM64Scale),
+				clamp16(loc.y * bpy.context.scene.blenderToSM64Scale),
+				clamp16(loc.z * bpy.context.scene.blenderToSM64Scale),
 			))
-			# Collect per-bone scale (pose_bone.scale is bone-local; (1,1,1) = rest pose)
-			s = currentPoseBone.scale
-			boneScaleData[boneIndex].append((s.x, s.y, s.z))
+			# Collect per-bone scale (1,1,1) = rest pose
+			boneScaleData[boneIndex].append((scale_vec.x, scale_vec.y, scale_vec.z))
 	
 	bpy.context.scene.frame_set(currentFrame)
 	removeTrailingFrames(translationData)
