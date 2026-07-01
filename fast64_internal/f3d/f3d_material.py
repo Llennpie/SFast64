@@ -336,6 +336,7 @@ def ui_geo_mode(settings, dataHolder, layout, useDropdown):
 			icon = 'TRIA_DOWN' if dataHolder.menu_geo else 'TRIA_RIGHT')
 	if not useDropdown or dataHolder.menu_geo:
 		inputGroup.prop(settings, 'g_zbuffer', text = 'Z Buffer')
+		inputGroup.prop(settings, 'g_near_depth_test', text = 'Near Depth Test')
 		inputGroup.prop(settings, 'g_shade', text = 'Shading')
 		inputGroup.prop(settings, 'g_cull_front', text = 'Cull Front')
 		inputGroup.prop(settings, 'g_cull_back', text = 'Cull Back')
@@ -2155,6 +2156,9 @@ class PrimDepthSettings(bpy.types.PropertyGroup):
 
 class RDPSettings(bpy.types.PropertyGroup):
 	g_zbuffer : bpy.props.BoolProperty(name = 'Z Buffer', default = True,
+		update = update_node_values)
+	g_near_depth_test : bpy.props.BoolProperty(name = 'Near Depth Test', default = False,
+		description = 'Geometry appears on top of surfaces within 5 world units (Pluto only)',
 		update = update_node_values)
 	g_shade : bpy.props.BoolProperty(name = 'Shading', default = True,
 		update = update_node_values)

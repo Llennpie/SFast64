@@ -2063,6 +2063,18 @@ def saveGeoModeDefinitionF3DEX2(fMaterial, settings, defaults, matWriteMethod):
 	saveBitGeoF3DEX2(settings.g_clipping, defaults.g_clipping, 'G_CLIPPING',
 		geo, matWriteMethod)
 
+	# Near Depth Test
+	if settings.g_near_depth_test != defaults.g_near_depth_test or matWriteMethod == GfxMatWriteMethod.WriteAll:
+		if settings.g_near_depth_test:
+			# Force z-buffer off
+			if 'G_ZBUFFER' in geo.setFlagList:
+				geo.setFlagList.remove('G_ZBUFFER')
+			if 'G_ZBUFFER' not in geo.clearFlagList:
+				geo.clearFlagList.append('G_ZBUFFER')
+			geo.setFlagList.append('G_ZBUFFER_NEAR_EXT')
+		else:
+			geo.clearFlagList.append('G_ZBUFFER_NEAR_EXT')
+
 	if len(geo.clearFlagList) != 0 or len(geo.setFlagList) != 0:
 		if len(geo.clearFlagList) == 0:
 			geo.clearFlagList.append('0')
